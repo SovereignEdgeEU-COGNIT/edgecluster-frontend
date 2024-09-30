@@ -1,0 +1,11 @@
+{
+  "api_endpoint": "http://localhost:1339",
+  "cognit_frontend": "http://localhost:1339",
+  "execution":  {
+	    "app_reqs_id": 10,
+      "function_id": 11,
+      "lang": "PY",
+	    "params": ["MQo=","Mg0="]
+ }
+
+}
