@@ -22,36 +22,21 @@ app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 async def root():
     return RedirectResponse(url="/docs")
 
-# TODO: Function document ID and AppReq ID could be a path parameter and a query parameter
-# In general REST path should ideally be used for resource rather than actions
-# Proposal: use /v1/functions/{id}/execute. The function already exists and only needs execution
-# 
-# @app.post("v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
-# async def execute_function(
-#     parameters: list[str],
-#     app_req_id: int,
-#     mode: ExecutionMode,
-#     token: Annotated[str | None, Header()] = None
-# ) -> int:
-
-#     authorize(token)
-
-#     sr.function_push(id=id, parameters=parameters, mode=mode)
-
-@app.post("/v1/execute", status_code=status.HTTP_200_OK)
+@app.post("v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
 async def execute_function(
-    execution: Execution,
+    parameters: list[str],
+    app_req_id: int, # not using at the moment
     mode: ExecutionMode,
     token: Annotated[str | None, Header()] = None
 ) -> int:
 
     authorize(token)
 
-    sr.function_push(execution=execution, mode=mode)
+    sr.function_push(id=id, parameters=parameters, mode=mode)
 
+@app.post("/v1/execute", status_code=status.HTTP_200_OK)
 
-# TODO: What to do with these metrics.
-# TODO: Shouldn't these be sent to the Cognit Frontend instead for getting the best ECFE ?
+# What to do with these metrics
 @app.post("/v1/device_metrics", status_code=status.HTTP_200_OK)
 async def upload_client_metrics(
     metrics: dict,

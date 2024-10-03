@@ -1,7 +1,9 @@
-from cognit_models import Execution, ExecutionMode
+from cognit_models import ExecutionMode
 import pyone
 from fastapi import HTTPException, status
 import os
+import requests
+import json
 
 DOCUMENT_TYPES = {
     'APP_REQUIREMENT': 1338,
@@ -19,15 +21,32 @@ ONE_XMLRPC = None  # Set when importing module
 
 one = None
 
-def function_push(execution: Execution, mode: ExecutionMode):
+def function_push(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
+    # Get Function document from opennebula
+    # Get App Req document from opennebula
+    # Get list of compatible SR VMs
+    # Get ideal VM based on LB logic
+    # Execute function on that SR VM
     pass
 
-# TODO: Map flavours to numbers or update SR to label FLAVOURS_STR as well. Use these as filter instead
-def get_runtimes(flavour: str) -> list[int]:
+# TODO: Update SR to label FLAVOURS_STR
+def get_runtimes_vms(flavour: str) -> list[pyone.bindings.VMType93Sub]:
     # sqlite cannot issue full text search
-    # Get every RUNNING VM whose name starts with FAAS_. FAAS comes from the role name on oneflow
-    vms = one.vmpool.info(-4, -1, -1, 3, "NAME=FAAS_").VM # one 6.10+ uses VM.NAME
+    # Get every RUNNING VM
+    flavour_vms = one.vmpool.infoextended(-4, -1, -1, 3, f"VM.USER_TEMPLATE.FLAVOURS_STR={flavour}").VM
 
+    vms = []
+
+    for vm in flavour_vms:
+        ut = dict(vm.USER_TEMPLATE)
+
+        if ut['ROLE_NAME'] == 'FAAS':
+            vms.append(vm)
+
+    return vms
+
+
+def get_runtime_endpoints(vms: list[pyone.bindings.VMType93Sub]):
     runtime_endpoints = []
 
     for vm in vms:
@@ -36,45 +55,23 @@ def get_runtimes(flavour: str) -> list[int]:
 
         runtime_endpoints.append(f"http://{ip}:8000")
 
+    return runtime_endpoints
 
 
-# TODO: Load balance mode. Explain which modes are required/considered
-# Ideally the SR App should have a way to communicate how many functions is it executing.
-# Otherwise we are limited to metric parsing, which might be inaccurate (metrics are scrapped per interval)
-# and time consuming (querying each SR VM metric can take time)
-# For example: GET /v1/faas -> [] of faas_task_uuid. Smaller [] is runtime candidate to run the current function
+
 def get_runtime(runtimes: list[str]) -> str:
     pass
 
-# class ExecSyncParams(BaseModel):
-#     lang: str = Field(
-#         default="",
-#         description="Language of the offloaded function",
-#     )
-#     fc: str = Field(
-#         default="",
-#         description="Function to be offloaded",
-#     )
-#     fc_hash: str = Field(
-#         default="",
-#         description="Hash of the function to be offloaded",
-#     )
-#     params: list[str] = Field(
-#         default="",
-#         description="List containing the serialized parameters by each device runtime transfered to the offloaded function",
-#     )
+# TODO: {'detail': 'Error deserializing function'}
+def execute_function(function: dict, mode: ExecutionMode, endpoint: str) -> requests.Response:
 
-# TODO: Example is wrong at https://github.com/SovereignEdgeEU-COGNIT/serverless-runtime/blob/c33dcc89dd250ed34022e8c5251638d27f8cdba3/docs/README.md#L32-L56
-_EXAMPLE_FUNCTION = {
-    "lang": "PY",
-    "fc": "gAWVKwIAAAAAAACMF2Nsb3VkcGlja2xlLmNsb3VkcGlja2xllIwOX21ha2VfZnVuY3Rpb26Uk5QoaACMDV9idWlsdGluX3R5cGWUk5SMCENvZGVUeXBllIWUUpQoSwJLAEsASwJLAktDQwh8AHwBFwBTAJROhZQpjAFhlIwBYpSGlIx2L21udC9jL1VzZXJzL2dwZXJhbHRhL09uZURyaXZlIC0gSUtFUkxBTiBTLkNPT1AvUFJPWUVDVE9TL0VVUk9QRU9TL0NPR05JVC9EZXNhcnJvbGxvIFdQMy9QcnVlYmFzL3Rlc3Rfc2VyaWFsaXphdGlvbi5weZSMCm15ZnVuY3Rpb26USxJDAggBlCkpdJRSlH2UKIwLX19wYWNrYWdlX1+UTowIX19uYW1lX1+UjAhfX21haW5fX5SMCF9fZmlsZV9flGgNdU5OTnSUUpSMHGNsb3VkcGlja2xlLmNsb3VkcGlja2xlX2Zhc3SUjBJfZnVuY3Rpb25fc2V0c3RhdGWUk5RoGH2UfZQoaBRoDowMX19xdWFsbmFtZV9flGgOjA9fX2Fubm90YXRpb25zX1+UfZSMDl9fa3dkZWZhdWx0c19flE6MDF9fZGVmYXVsdHNfX5ROjApfX21vZHVsZV9flGgVjAdfX2RvY19flE6MC19fY2xvc3VyZV9flE6MF19jbG91ZHBpY2tsZV9zdWJtb2R1bGVzlF2UjAtfX2dsb2JhbHNfX5R9lHWGlIZSMC4=",
-    "fc_hash": "", # TODO: Missing in example
-    "params":["gAVLAi4=","gAVLAy4="]
-}
+    # Ideally SR API should handle execution mode as query parameter as well instead of two separate URI
+    if mode == "sync":
+        url = f"{endpoint}/v1/faas/execute-sync"
+    elif mode == "async":
+        url = f"{endpoint}/v1/faas/execute-async"
 
-
-def execute_function(function: dict, mode: ExecutionMode):
-    pass
+    return requests.post(url=url, data=json.dumps(function))
 
 # Helpers
 
