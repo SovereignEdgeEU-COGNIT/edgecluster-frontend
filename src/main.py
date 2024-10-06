@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-from fastapi import FastAPI, status, HTTPException, Header
+from fastapi import FastAPI, status, HTTPException, Header, Path, Query
 from fastapi.responses import RedirectResponse
 from typing import Annotated, Any, List
 import uvicorn
@@ -24,24 +24,26 @@ app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 async def root():
     return RedirectResponse(url="/docs")
 
+# TODO: There is no route to check async function executions
 @app.post("/v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
 async def execute_function(
+    id: Annotated[int, Path(title="Document ID of the Function")],
     parameters: list[str],
-    app_req_id: int,
-    mode: ExecutionMode,
+    app_req_id: Annotated[int, Query(title="Document ID of the App Requirement")],
+    mode: Annotated[ExecutionMode, Query(title=f"Execution Mode")],
     token: Annotated[str | None, Header()] = None
-) -> int:
+) -> dict:
 
     authorize(token)
 
-    return sr.function_push(id=id, app_req_id=app_req_id, parameters=parameters, mode=mode)
+    return sr.function_push(function_id=id, app_req_id=app_req_id, parameters=parameters, mode=mode)
 
 # What to do with these metrics
 @app.post("/v1/device_metrics", status_code=status.HTTP_200_OK)
 async def upload_client_metrics(
     metrics: dict,
     token: Annotated[str | None, Header()] = None
-) -> int:
+):
 
     authorize(token)
 

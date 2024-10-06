@@ -23,27 +23,23 @@ ONEFLOW = None
 HOME = os.path.expanduser("~")
 ONE_AUTH = f"{HOME}/.one/one_auth" # Serverless Runtimes owner credentials
 BASIC_AUTH = {}
-
-with open(ONE_AUTH, 'r') as file:
-    credentials = file.read()
-    credentials = credentials.split(":")
-
-    BASIC_AUTH["user"] = credentials[0]
-    BASIC_AUTH["password"] = credentials[1]
-
 one = None
 
 def function_push(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
-    function = get_document(function_id, DOCUMENT_TYPES["FUNCTION"])
-    app_req = get_document(app_req_id, DOCUMENT_TYPES["FUNCTION"])
-    flavour = app_req["FLAVOUR"]
+    document = get_document(function_id, "FUNCTION")
+    function = dict(document.TEMPLATE)
+
+    document = get_document(app_req_id, "APP_REQUIREMENT")
+    requirement = dict(document.TEMPLATE)
+    flavour = requirement["FLAVOUR"]
 
     # Get ideal VM based on LB logic
     services = get_runtime_services(flavour)
     vm_ids = get_sr_vm_ids(services)
     endpoint = get_runtime_endpoint(vm_ids)
 
-    return execute_function(function=function, mode=mode, endpoint=endpoint)
+    return execute_function(function=function, mode=mode, endpoint=endpoint, params=parameters)
+
 
 def get_runtime_services(flavour: str) -> list[dict]:
     """Returns a list of active opennebula flow services backing a certain Serverless Runtime Flavour
@@ -110,9 +106,9 @@ def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
 
 
 
-# TODO: define LB logic when module is loaded. Generate the function.
 def get_runtime_endpoint(vm_ids: list[int]):
 
+    # TODO: define LB logic when module is loaded. Generate the function.
     if LB_MODE == "cpu":
         vm_id = get_sr_vm_id_by_cpu(vm_ids)
     else:
@@ -143,19 +139,29 @@ def get_runtime_endpoint(vm_ids: list[int]):
 #     "params": ["gAVLAi4=", "gAVLAy4=", "gAVLBC4="]
 # }
 
-# EXAMPLE_RESPONSE = {
+# EXAMPLE_RESPONSE_SYNC = {
 #   "ret_code": 0,
 #   "res": "gAVLGC4=",
 #   "err": null
 # }
+# EXAMPLE_RESPONSE_ASYNC = {
+# {
+#     "status": "WORKING",
+#     "res": null,
+#     "exec_id": {
+#         "faas_task_uuid": "ac249cb6-8425-11ef-b968-c297e15a9b8f"
+#     }
+# }
 
-def execute_function(function: dict, mode: ExecutionMode, endpoint: str):
+def execute_function(endpoint: str, function: dict, mode: ExecutionMode, params: list[str]):
 
     # Ideally SR API should handle execution mode as query parameter as well instead of two separate URI
     if mode == "sync":
         url = f"{endpoint}/v1/faas/execute-sync"
     elif mode == "async":
         url = f"{endpoint}/v1/faas/execute-async"
+
+    function["params"] = params
 
     response = requests.post(url=url, data=json.dumps(function))
 
@@ -171,7 +177,12 @@ def create_client():
 
     if os.path.exists(ONE_AUTH):
         with open(ONE_AUTH, 'r') as file:
-            session = file.read()
+            session = file.read().strip('\n')
+
+            credentials = session.split(":")
+
+            BASIC_AUTH["user"] = credentials[0]
+            BASIC_AUTH["password"] = credentials[1]
     else:
         print(f"The file {ONE_AUTH} does not exist.")
         exit(1)

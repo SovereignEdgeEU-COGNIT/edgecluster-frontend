@@ -15,6 +15,8 @@ cognit_frontend: 'http://localhost:1338'
 log_level: debug
 ```
 
+The COGNIT admin user credentials will be loaded from `~/.one/one_auth`. These are the credentials from the user that will own the Serverless Runtime instances.
+
 The application was developed with **python 3.10**. Check the [dependencies](./requirements.txt). It is recommended to install it with a virtual environment.
 
 Install virtualenv
@@ -41,20 +43,15 @@ Run the application
 It should result in uvicorn starting the web server and logging requests
 
 ```log
-venv)  ◰³ venv  ~/P/C/edgecluster-frontend   v1 *  ./src/main.py                                                                                                         8s
-INFO:     Started server process [22228]
+(venv)  ◰³ venv  ~/P/C/edgecluster-frontend   v1 *  ./src/main.py                                                                                                        53s
+INFO:     Started server process [27235]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:1339 (Press CTRL+C to quit)
-INFO:     127.0.0.1:55300 - "GET / HTTP/1.1" 307 Temporary Redirect
-INFO:     127.0.0.1:55300 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55300 - "GET /openapi.json HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55314 - "GET / HTTP/1.1" 307 Temporary Redirect
-INFO:     127.0.0.1:55314 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55314 - "GET / HTTP/1.1" 307 Temporary Redirect
-INFO:     127.0.0.1:55314 - "GET /docs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55318 - "GET / HTTP/1.1" 307 Temporary Redirect
-INFO:     127.0.0.1:55318 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56536 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56536 - "GET /openapi.json HTTP/1.1" 200 OK
+32
+INFO:     127.0.0.1:56548 - "POST /v1/functions/32/execute?app_req_id=28&mode=sync HTTP/1.1" 200 OK
 ```
 
 Unload the virtual env after stopping the application
