@@ -8,12 +8,14 @@ import uvicorn
 import cognit_conf as conf
 import biscuit_token as auth
 import serverless_runtime as sr
-from cognit_models import Execution, ExecutionMode
+from cognit_models import ExecutionMode
 
 auth.KEY_PATH = f'{conf.COGNIT_FRONTEND}/v1/public_key'
 auth.load_key()
 
 sr.ONE_XMLRPC = conf.ONE_XMLRPC
+sr.ONEFLOW = conf.ONEFLOW
+
 sr.create_client()
 
 app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
@@ -22,19 +24,17 @@ app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 async def root():
     return RedirectResponse(url="/docs")
 
-@app.post("v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
+@app.post("/v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
 async def execute_function(
     parameters: list[str],
-    app_req_id: int, # not using at the moment
+    app_req_id: int,
     mode: ExecutionMode,
     token: Annotated[str | None, Header()] = None
 ) -> int:
 
     authorize(token)
 
-    sr.function_push(id=id, parameters=parameters, mode=mode)
-
-@app.post("/v1/execute", status_code=status.HTTP_200_OK)
+    return sr.function_push(id=id, app_req_id=app_req_id, parameters=parameters, mode=mode)
 
 # What to do with these metrics
 @app.post("/v1/device_metrics", status_code=status.HTTP_200_OK)

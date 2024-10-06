@@ -1,11 +1,9 @@
 {
   "api_endpoint": "http://localhost:1339",
-  "cognit_frontend": "http://localhost:1339",
-  "execution":  {
-	    "app_reqs_id": 10,
-      "function_id": 11,
-      "lang": "PY",
-	    "params": ["MQo=","Mg0="]
- }
-
+  "cognit_frontend": "http://localhost:1338",
+  "credentials": "oneadmin:opennebula",
+  "app_req_id": 0,
+  "function_id": 1,
+  "execution_mode": "sync",
+  "params": ["gAVLAi4=", "gAVLAy4=", "gAVLBC4="]
 }

@@ -9,6 +9,7 @@ DEFAULT = {
     'host': '0.0.0.0',
     'port': 1339,
     'one_xmlrpc': 'http://localhost:2633/RPC2',
+    'oneflow': 'http://localhost:2474',
     'cognit_frontend': 'http://localhost:1338',
     'log_level': 'info'
 }
@@ -33,6 +34,7 @@ config = DEFAULT.copy()
 config.update(user_config)
 
 ONE_XMLRPC = config['one_xmlrpc']
+ONEFLOW = config['oneflow']
 COGNIT_FRONTEND = config['cognit_frontend']
 
 one = urlparse(ONE_XMLRPC)
