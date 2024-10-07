@@ -4,6 +4,7 @@ from fastapi import FastAPI, status, HTTPException, Header, Path, Query
 from fastapi.responses import RedirectResponse
 from typing import Annotated
 import uvicorn
+import logging
 
 import cognit_conf as conf
 import biscuit_token as auth
@@ -15,8 +16,13 @@ auth.load_key()
 
 sr.ONE_XMLRPC = conf.ONE_XMLRPC
 sr.ONEFLOW = conf.ONEFLOW
-
 sr.create_client()
+
+logger = logging.getLogger("uvicorn")
+if conf.LOG_LEVEL == 'debug':  # uvicorn run log parameter is ignored
+    logger.setLevel(logging.DEBUG)
+
+sr.logger = logger
 
 app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 
@@ -39,7 +45,7 @@ async def execute_function(
 
     authorize(token)
 
-    return sr.function_push(function_id=id, app_req_id=app_req_id, parameters=parameters, mode=mode)
+    return sr.execute_function(function_id=id, app_req_id=app_req_id, parameters=parameters, mode=mode)
 
 
 # What to do with these metrics

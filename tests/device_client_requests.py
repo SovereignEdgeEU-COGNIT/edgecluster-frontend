@@ -34,7 +34,7 @@ def inspect_response(response: requests.Response):
 
 
 def execute(token: str, function_id: int, app_req_id: int, mode: str, parameters = list[str]):
-    print(f"Execution function {function_id} with requirements {app_req_id} on mode {mode}")
+    print(f"Executing function {function_id} with requirements {app_req_id} on mode {mode} with parameters {parameters}")
 
     headers = {"token": token}
     uri = f'{CONF["api_endpoint"]}/v1/functions/{function_id}/execute'
@@ -47,13 +47,18 @@ def execute(token: str, function_id: int, app_req_id: int, mode: str, parameters
 
     inspect_response(response)
 
+# Get biscuit token
 
 credentials = CONF['credentials'].split(':')
 token = authenticate(credentials[0], credentials[1])
 
-function_id = CONF['function_id']
-app_req_id = CONF['app_req_id']
-mode = CONF['execution_mode']
-params = CONF['params']
+# Execute sync function
+
+sync = CONF['execution']["sync"]
+
+function_id = sync['function_id']
+app_req_id = sync['app_req_id']
+mode = sync['execution_mode']
+params = sync['params']
 
 execute(token=token, function_id=function_id, app_req_id=app_req_id, mode=mode, parameters=params)

@@ -1,10 +1,14 @@
-from cognit_models import ExecutionMode
 import pyone
 from fastapi import HTTPException, status
 import os
 import requests
 from requests.auth import HTTPBasicAuth
 import json
+from decimal import Decimal
+from urllib.parse import urlparse
+import socket
+
+from cognit_models import ExecutionMode
 
 DOCUMENT_TYPES = {
     'APP_REQUIREMENT': 1338,
@@ -22,10 +26,12 @@ ONEFLOW = None
 HOME = os.path.expanduser("~")
 ONE_AUTH = f"{HOME}/.one/one_auth"  # Serverless Runtimes owner credentials
 BASIC_AUTH = {}
+
 one = None
+logger = None
 
 
-def function_push(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
+def execute_function(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
     document = get_document(function_id, "FUNCTION")
     function = dict(document.TEMPLATE)
 
@@ -33,12 +39,18 @@ def function_push(function_id: int, app_req_id: int, parameters: list[str], mode
     requirement = dict(document.TEMPLATE)
     flavour = requirement["FLAVOUR"]
 
+    logger.debug(function)
+    logger.debug(requirement)
+
     # Get ideal VM based on LB logic
     services = get_runtime_services(flavour)
+
+    logger.debug(services)
+
     vm_ids = get_sr_vm_ids(services)
     endpoint = get_runtime_endpoint(vm_ids)
 
-    return execute_function(function=function, mode=mode, endpoint=endpoint, params=parameters)
+    return offload_function(function=function, mode=mode, endpoint=endpoint, params=parameters)
 
 
 def get_runtime_services(flavour: str) -> list[dict]:
@@ -60,11 +72,13 @@ def get_runtime_services(flavour: str) -> list[dict]:
             status_code=response.status_code, detail=response.json())
 
     services = response.json()
+    logger.debug(services)
 
     flavour_services = []
 
     for service in services["DOCUMENT_POOL"]["DOCUMENT"]:
-        if service["NAME"] == flavour and service["TEMPLATE"]["BODY"].roles[0].name == "FAAS" and service["TEMPLATE"]["BODY"].roles[0].cardinality > 0:
+
+        if service["NAME"] == flavour and service["TEMPLATE"]["BODY"]["roles"][0]["name"] == "FAAS" and service["TEMPLATE"]["BODY"]["roles"][0]["cardinality"] > 0:
             flavour_services.append(service)
 
     if len(flavour_services) == 0:
@@ -78,7 +92,7 @@ def get_sr_vm_ids(services: list[dict]) -> list[int]:
     vm_ids = []
 
     for service in services:
-        vms = service["TEMPLATE"]["BODY"].roles[0].nodes
+        vms = service["TEMPLATE"]["BODY"]["roles"][0]["nodes"]
 
         for vm in vms:
             vm_ids.append(vm["deploy_id"])
@@ -87,24 +101,29 @@ def get_sr_vm_ids(services: list[dict]) -> list[int]:
 
 
 def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
+    # get last monitoring entry of each VM
     monitoring_entries = validate_call(
         lambda: one.vmpool.monitoring(-2, 0).MONITORING)
 
     cpu_load = {}
 
+    # get cpu load metrics of each vm in sr_vm_ids
     for vm_monitoring in monitoring_entries:
         cpu = vm_monitoring.CPU
 
         if cpu is None:
             continue
 
-        cpu_load["id"] = vm_monitoring.ID
-        cpu_load["cpu"] = cpu
+        vm_id = vm_monitoring.ID
 
-    # remove non SR vm_ids from cpu_load
-    for vm_id in cpu_load.keys():
-        if vm_id not in sr_vm_ids:
-            cpu_load.pop(vm_id)
+        if vm_id in sr_vm_ids:
+            # return first found vm with less than 10% cpu usage
+            if cpu < Decimal(10.0):
+                return vm_id
+
+            cpu_load[vm_id] = cpu
+
+    logger.debug(cpu_load)
 
     return min(cpu_load, key=cpu_load.get)  # return vm with lowest cpu_load
 
@@ -120,6 +139,8 @@ def get_runtime_endpoint(vm_ids: list[int]):
 
     vm = validate_call(lambda: one.vm.info(vm_id))
     template = dict(vm.TEMPLATE)
+
+    logger.debug(template)
 
     if 'NIC' not in template:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -157,7 +178,29 @@ def get_runtime_endpoint(vm_ids: list[int]):
 #     }
 # }
 
-def execute_function(endpoint: str, function: dict, mode: ExecutionMode, params: list[str]):
+def offload_function(endpoint: str, function: dict, mode: ExecutionMode, params: list[str]):
+    """Offload the function to the Serverless Runtime instance
+
+    Args:
+        endpoint (str): Where the SR App is reachable
+        function (dict): Function to be executed
+        mode (ExecutionMode): sync or async execution
+        params (list[str]): Function input parameters
+
+    Returns:
+        _type_: Response from the SR App
+    """
+
+    sr = urlparse(endpoint)
+
+    try:
+        socket.create_connection((sr.hostname, sr.port), timeout=5)
+    except socket.error as e:
+        # TODO: Handle SR endpoint not being up
+        # Best effort would be to try and get other SR and log this as a warning
+        detail = f"Error: Unable to connect to Serverless Runtime at {endpoint} {str(e)}"
+
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     # Ideally SR API should handle execution mode as query parameter as well instead of two separate URI
     if mode == "sync":
@@ -165,9 +208,16 @@ def execute_function(endpoint: str, function: dict, mode: ExecutionMode, params:
     elif mode == "async":
         url = f"{endpoint}/v1/faas/execute-async"
 
-    function["params"] = params
+    # function document keys are UPPERCASE in OpenNebula DB, but lowercase on SR model
+    function_lowercase = {k.lower(): v for k, v in function.items()}
 
-    response = requests.post(url=url, data=json.dumps(function))
+    function_lowercase["params"] = params
+
+    logger.debug(f"Execution Endpoint: {url}")
+    logger.debug(function_lowercase)
+    logger.debug(f"function parameters: {params}")
+
+    response = requests.post(url=url, data=json.dumps(function_lowercase))
 
     if response.status_code != 200:
         raise HTTPException(response.status_code, detail=response.json())
