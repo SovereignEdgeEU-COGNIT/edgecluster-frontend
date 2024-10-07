@@ -37,13 +37,15 @@ ONE_XMLRPC = config['one_xmlrpc']
 ONEFLOW = config['oneflow']
 COGNIT_FRONTEND = config['cognit_frontend']
 
-one = urlparse(ONE_XMLRPC)
+for endpoint in [ONE_XMLRPC, ONEFLOW]:
+    one = urlparse(endpoint)
 
-try:
-    socket.create_connection((one.hostname, one.port), timeout=5)
-except socket.error as e:
-    print(f"Error: Unable to connect to OpenNebula at {ONE_XMLRPC}. {str(e)}")
-    sys.exit(1)
+    try:
+        socket.create_connection((one.hostname, one.port), timeout=5)
+    except socket.error as e:
+        print(
+            f"Error: Unable to connect to OpenNebula at {endpoint} {str(e)}")
+        sys.exit(1)
 
 HOST = config['host']
 PORT = config['port']

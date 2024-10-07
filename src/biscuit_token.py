@@ -8,7 +8,7 @@ public_key = None
 
 def load_key():
     """Load public key from Cognit Frontend for token verification
-    """    
+    """
     global public_key
 
     response = requests.get(KEY_PATH)
@@ -33,5 +33,5 @@ def authorize_token(token64: str) -> str:
     try:
         attempt_authorization()
     except Exception as e:
-        load_key() # maybe the key has been renewed
+        load_key()  # maybe the key has been renewed
         attempt_authorization()

@@ -5,7 +5,6 @@ import os
 import requests
 from requests.auth import HTTPBasicAuth
 import json
-from decimal import Decimal
 
 DOCUMENT_TYPES = {
     'APP_REQUIREMENT': 1338,
@@ -21,9 +20,10 @@ ONEFLOW = None
 # of an admin of sorts of the Function Executing group. Could also be oneadmin.
 # The user only owns the app_requirements and function documents. SERVERLESS means no server controlled
 HOME = os.path.expanduser("~")
-ONE_AUTH = f"{HOME}/.one/one_auth" # Serverless Runtimes owner credentials
+ONE_AUTH = f"{HOME}/.one/one_auth"  # Serverless Runtimes owner credentials
 BASIC_AUTH = {}
 one = None
+
 
 def function_push(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
     document = get_document(function_id, "FUNCTION")
@@ -50,9 +50,10 @@ def get_runtime_services(flavour: str) -> list[dict]:
     Returns:
         list[dict]: oneflow instances documents
     """
-    uri = f"http://{ONEFLOW}/service"
+    uri = f"{ONEFLOW}/service"
 
-    response = requests.get(uri, auth=HTTPBasicAuth(BASIC_AUTH['user'], BASIC_AUTH['password']))
+    response = requests.get(uri, auth=HTTPBasicAuth(
+        BASIC_AUTH['user'], BASIC_AUTH['password']))
 
     if response.status_code != 200:
         raise HTTPException(
@@ -67,9 +68,11 @@ def get_runtime_services(flavour: str) -> list[dict]:
             flavour_services.append(service)
 
     if len(flavour_services) == 0:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Could not find Serverless Runtime instances for flavour {flavour}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=f"Could not find Serverless Runtime instances for flavour {flavour}")
 
     return flavour_services
+
 
 def get_sr_vm_ids(services: list[dict]) -> list[int]:
     vm_ids = []
@@ -80,7 +83,8 @@ def get_sr_vm_ids(services: list[dict]) -> list[int]:
         for vm in vms:
             vm_ids.append(vm["deploy_id"])
 
-    vm_ids
+    return vm_ids
+
 
 def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
     monitoring_entries = validate_call(
@@ -102,8 +106,7 @@ def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
         if vm_id not in sr_vm_ids:
             cpu_load.pop(vm_id)
 
-    return min(cpu_load, key=cpu_load.get) # return vm with lowest cpu_load
-
+    return min(cpu_load, key=cpu_load.get)  # return vm with lowest cpu_load
 
 
 def get_runtime_endpoint(vm_ids: list[int]):
@@ -119,9 +122,11 @@ def get_runtime_endpoint(vm_ids: list[int]):
     template = dict(vm.TEMPLATE)
 
     if 'NIC' not in template:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serverless Runtime VM does not have NIC")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Serverless Runtime VM does not have NIC")
     if 'IP' not in template["NIC"]:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Serverless Runtime VM does not have IP")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Serverless Runtime VM does not have IP")
 
     # ip = template['NIC'][0]['IP'] Multiple NIC turns NIC into an array
     # VMs with 1 NIC assumed
@@ -129,7 +134,6 @@ def get_runtime_endpoint(vm_ids: list[int]):
     runtime_endpoint = f"http://{ip}:{SR_PORT}"
 
     return runtime_endpoint
-
 
 
 # EXAMPLE_FUNCTION = {
@@ -172,6 +176,7 @@ def execute_function(endpoint: str, function: dict, mode: ExecutionMode, params:
 
 # Helpers
 
+
 def create_client():
     global one
 
@@ -189,6 +194,7 @@ def create_client():
 
     one = pyone.OneServer(ONE_XMLRPC, session=session)
 
+
 def get_document(document_id: int, type_str: str):
     document = validate_call(lambda: one.document.info(document_id))
 
@@ -200,6 +206,7 @@ def get_document(document_id: int, type_str: str):
             status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail=e)
 
     return document
+
 
 def validate_call(xmlrpc_call):
     try:
