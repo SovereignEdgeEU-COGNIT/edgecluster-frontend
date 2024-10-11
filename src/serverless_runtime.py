@@ -5,8 +5,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 import json
 from decimal import Decimal
-from urllib.parse import urlparse
-import socket
+import sys
 
 from cognit_models import ExecutionMode
 
@@ -14,6 +13,9 @@ DOCUMENT_TYPES = {
     'APP_REQUIREMENT': 1338,
     'FUNCTION': 1339
 }
+
+ERROR_OFFLOAD = "Failed to offload function"
+
 SR_PORT = 8000
 LB_MODE = "cpu"
 
@@ -64,12 +66,14 @@ def get_runtime_services(flavour: str) -> list[dict]:
     """
     uri = f"{ONEFLOW}/service"
 
+    logger.info("Getting existing oneflow services")
     response = requests.get(uri, auth=HTTPBasicAuth(
         BASIC_AUTH['user'], BASIC_AUTH['password']))
 
     if response.status_code != 200:
+        logger.error(response.json())
         raise HTTPException(
-            status_code=response.status_code, detail=response.json())
+            status_code=response.status_code, detail="Could not read Serverless Runtime instances")
 
     services = response.json()
     logger.debug(services)
@@ -101,7 +105,11 @@ def get_sr_vm_ids(services: list[dict]) -> list[int]:
 
 
 def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
-    # get last monitoring entry of each VM
+    # can be optimized by getting VMs only for the cognit/serverless group
+    # this group would only own SR VMs
+    # currently it reads every VM in the pool
+
+    logger.info("Reading VMs last monitoring metrics")
     monitoring_entries = validate_call(
         lambda: one.vmpool.monitoring(-2, 0).MONITORING)
 
@@ -127,34 +135,39 @@ def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
 
     return min(cpu_load, key=cpu_load.get)  # return vm with lowest cpu_load
 
-
+# TODO: Best effor. Try next SR VM for flavour if first candidate fails
 def get_runtime_endpoint(vm_ids: list[int]):
 
     # TODO: define LB logic when module is loaded. Generate the function.
     if LB_MODE == "cpu":
         vm_id = get_sr_vm_id_by_cpu(vm_ids)
     else:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Unknown load balance mode '{LB_MODE}'")
+        logger.warning(f"Unknown load balance mode '{LB_MODE}'. Using CPU Load Balance mode.")
 
+    logger.info(f"Getting information about VM {vm_id}")
     vm = validate_call(lambda: one.vm.info(vm_id))
     template = dict(vm.TEMPLATE)
 
     logger.debug(template)
 
     if 'NIC' not in template:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Serverless Runtime VM does not have NIC")
-    if 'IP' not in template["NIC"]:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Serverless Runtime VM does not have IP")
+        logger.error("Serverless Runtime VM does not have NIC")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_OFFLOAD)
 
     # ip = template['NIC'][0]['IP'] Multiple NIC turns NIC into an array
     # VMs with 1 NIC assumed
-    ip = template['NIC']['IP']
-    runtime_endpoint = f"http://{ip}:{SR_PORT}"
+    if 'IP' in template["NIC"]:
+        ip = template["NIC"]["IP"]
+        runtime_endpoint = f"http://{ip}:{SR_PORT}"
+    elif 'IP6' in template["NIC"]:
+        ip = template["NIC"]["IP6"]
+        runtime_endpoint = f"http://[{ip}]:{SR_PORT}"
+    else:
+        logger.error(f"Serverless Runtime VM '{vm_id}' does not have IP")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_OFFLOAD)
 
     return runtime_endpoint
+
 
 
 # EXAMPLE_FUNCTION = {
@@ -179,10 +192,10 @@ def get_runtime_endpoint(vm_ids: list[int]):
 # }
 
 def offload_function(endpoint: str, function: dict, mode: ExecutionMode, params: list[str]):
-    """Offload the function to the Serverless Runtime instance
+    """Offload the function execution to the Serverless Runtime instance
 
     Args:
-        endpoint (str): Where the SR App is reachable
+        endpoint (str): Where the Serverless Runtime Instance is runninr
         function (dict): Function to be executed
         mode (ExecutionMode): sync or async execution
         params (list[str]): Function input parameters
@@ -190,17 +203,6 @@ def offload_function(endpoint: str, function: dict, mode: ExecutionMode, params:
     Returns:
         _type_: Response from the SR App
     """
-
-    sr = urlparse(endpoint)
-
-    try:
-        socket.create_connection((sr.hostname, sr.port), timeout=5)
-    except socket.error as e:
-        # TODO: Handle SR endpoint not being up
-        # Best effort would be to try and get other SR and log this as a warning
-        detail = f"Error: Unable to connect to Serverless Runtime at {endpoint} {str(e)}"
-
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
     # Ideally SR API should handle execution mode as query parameter as well instead of two separate URI
     if mode == "sync":
@@ -213,14 +215,19 @@ def offload_function(endpoint: str, function: dict, mode: ExecutionMode, params:
 
     function_lowercase["params"] = params
 
-    logger.debug(f"Execution Endpoint: {url}")
+    logger.info(f"Offloading function to {url}")
     logger.debug(function_lowercase)
     logger.debug(f"function parameters: {params}")
 
-    response = requests.post(url=url, data=json.dumps(function_lowercase))
+    try:
+        response = requests.post(url=url, data=json.dumps(function_lowercase))
+    except Exception as e:
+        logger.error(e)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=ERROR_OFFLOAD)
 
     if response.status_code != 200:
-        raise HTTPException(response.status_code, detail=response.json())
+        logger.error(response.json())
+        raise HTTPException(status_code=response.status_code, detail=ERROR_OFFLOAD)
 
     return response.json()
 
@@ -239,21 +246,22 @@ def create_client():
             BASIC_AUTH["user"] = credentials[0]
             BASIC_AUTH["password"] = credentials[1]
     else:
-        print(f"The file {ONE_AUTH} does not exist.")
+        sys.stderr.write(f"The file {ONE_AUTH} does not exist.")
         exit(1)
 
     one = pyone.OneServer(ONE_XMLRPC, session=session)
 
 
 def get_document(document_id: int, type_str: str):
+    logger.info(f"Getting information about document {document_id}")
     document = validate_call(lambda: one.document.info(document_id))
 
     type = DOCUMENT_TYPES[type_str]
 
     if int(document.TYPE) != type:
-        e = f"Resource {document_id} is not of type {type_str}"
-        raise HTTPException(
-            status_code=status.HTTP_405_METHOD_NOT_ALLOWED, detail=e)
+        error = f"Resource {document_id} is not of type {type_str}"
+        logger.error(error)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
 
     return document
 

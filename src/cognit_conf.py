@@ -40,18 +40,18 @@ COGNIT_FRONTEND = config['cognit_frontend']
 for endpoint in [ONE_XMLRPC, ONEFLOW]:
     one = urlparse(endpoint)
 
-    port = one.port
-
     if one.port is None:
         if one.scheme == 'https':
             port = 443
         elif one.scheme == 'http':
             port = 80
+    else:
+        port = one.port
 
     try:
         socket.create_connection((one.hostname, port), timeout=5)
     except socket.error as e:
-        print(
+        sys.stderr.write(
             f"Error: Unable to connect to OpenNebula at {endpoint} {str(e)}")
         sys.exit(1)
 

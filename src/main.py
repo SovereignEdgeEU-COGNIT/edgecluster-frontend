@@ -32,7 +32,8 @@ async def root():
     return RedirectResponse(url="/docs")
 
 # TODO: There is no route to check async function executions
-
+# TODO: Improve resilience by retrying other SR VMs within flavour in case of faulty SR (API crash, no NIC, network bad)
+# TODO: Adjust error response messages. Backend problems should be error logs instead.
 
 @app.post("/v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
 async def execute_function(
