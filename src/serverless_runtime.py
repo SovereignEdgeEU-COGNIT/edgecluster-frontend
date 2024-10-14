@@ -52,7 +52,7 @@ def execute_function(function_id: int, app_req_id: int, parameters: list[str], m
     vm_ids = get_sr_vm_ids(services)
     endpoint = get_runtime_endpoint(vm_ids)
 
-    return offload_function(function=function, mode=mode, endpoint=endpoint, params=parameters)
+    return offload_function(function=function, mode=mode, app_req_id=app_req_id, endpoint=endpoint, params=parameters)
 
 
 def get_runtime_services(flavour: str) -> list[dict]:
@@ -191,7 +191,7 @@ def get_runtime_endpoint(vm_ids: list[int]):
 #     }
 # }
 
-def offload_function(endpoint: str, function: dict, mode: ExecutionMode, params: list[str]):
+def offload_function(endpoint: str, function: dict, app_req_id: int, mode: ExecutionMode, params: list[str]):
     """Offload the function execution to the Serverless Runtime instance
 
     Args:
@@ -214,10 +214,12 @@ def offload_function(endpoint: str, function: dict, mode: ExecutionMode, params:
     function_lowercase = {k.lower(): v for k, v in function.items()}
 
     function_lowercase["params"] = params
+    function_lowercase["app_req_id"] = app_req_id
 
     logger.info(f"Offloading function to {url}")
     logger.debug(function_lowercase)
-    logger.debug(f"function parameters: {params}")
+    logger.debug(f"Function parameters: {params}")
+    logger.debug(f"App Requirements: {app_req_id}")
 
     try:
         response = requests.post(url=url, data=json.dumps(function_lowercase))
