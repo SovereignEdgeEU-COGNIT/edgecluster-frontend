@@ -1,0 +1,13 @@
+{
+  "api_endpoint": "http://localhost:1339",
+  "cognit_frontend": "http://localhost:1338",
+  "credentials": "oneadmin:opennebula",
+  "execution": {
+    "sync": {
+      "app_req_id": 37,
+      "function_id": 39,
+      "execution_mode": "sync",
+      "params": ["gAVLAi4=", "gAVLAy4=", "gAVLBC4="]
+    }
+  }
+}
