@@ -21,6 +21,7 @@ LB_MODE = "cpu"
 
 ONE_XMLRPC = None  # Set when importing module
 ONEFLOW = None
+CLUSTER_ID = None
 
 # The user doesn't control the SR VMs. These VMs shared among every user should be under the control
 # of an admin of sorts of the Function Executing group. Could also be oneadmin.
@@ -47,9 +48,8 @@ def execute_function(function_id: int, app_req_id: int, parameters: list[str], m
     # Get ideal VM based on LB logic
     services = get_runtime_services(flavour)
 
-    logger.debug(services)
-
     vm_ids = get_sr_vm_ids(services)
+
     endpoint = get_runtime_endpoint(vm_ids)
 
     return offload_function(function=function, mode=mode, app_req_id=app_req_id, endpoint=endpoint, params=parameters)
@@ -89,22 +89,37 @@ def get_runtime_services(flavour: str) -> list[dict]:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                             detail=f"Could not find Serverless Runtime instances for flavour {flavour}")
 
+    logger.debug(flavour_services)
+
     return flavour_services
 
 
 def get_sr_vm_ids(services: list[dict]) -> list[int]:
-    vm_ids = []
+    vm_ids_sr = []
 
+    # Get every FAAS VM. FAAS is role 0 on flavour service templates
     for service in services:
         vms = service["TEMPLATE"]["BODY"]["roles"][0]["nodes"]
 
         for vm in vms:
-            vm_ids.append(vm["deploy_id"])
+            vm_ids_sr.append(vm["deploy_id"])
+
+    # Get every RUNNING VM on a cluster
+    vmpool_ec = one.vmpool.infoextended(-2, -1, -1, 3, f'CID={CLUSTER_ID}').VM
+    vm_ids_ec = []
+
+    for vm in vmpool_ec:
+        vm_ids_ec.append(vm.ID)
+
+    vm_ids = list(set(vm_ids_sr) & set(vm_ids_ec))
+
+    logger.info(f"Reading SR VMs for flavour on cluster {CLUSTER_ID}")
+    logger.debug(vm_ids)
 
     return vm_ids
 
 
-def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
+def get_sr_vms_by_cpu(sr_vm_ids: list[int]) -> list:
     # can be optimized by getting VMs only for the cognit/serverless group
     # this group would only own SR VMs
     # currently it reads every VM in the pool
@@ -125,48 +140,51 @@ def get_sr_vm_id_by_cpu(sr_vm_ids: list[int]):
         vm_id = vm_monitoring.ID
 
         if vm_id in sr_vm_ids:
-            # return first found vm with less than 10% cpu usage
-            if cpu < Decimal(10.0):
-                return vm_id
-
             cpu_load[vm_id] = cpu
 
+    # sort by cpu usage
     logger.debug(cpu_load)
+    cpu_load_sorted = sorted(cpu_load.keys(), key=cpu_load.get)
 
-    return min(cpu_load, key=cpu_load.get)  # return vm with lowest cpu_load
+    logger.debug(cpu_load_sorted)
+    return cpu_load_sorted
 
-# TODO: Best effor. Try next SR VM for flavour if first candidate fails
 def get_runtime_endpoint(vm_ids: list[int]):
 
     # TODO: define LB logic when module is loaded. Generate the function.
     if LB_MODE == "cpu":
-        vm_id = get_sr_vm_id_by_cpu(vm_ids)
+        vm_ids = get_sr_vms_by_cpu(vm_ids)
     else:
         logger.warning(f"Unknown load balance mode '{LB_MODE}'. Using CPU Load Balance mode.")
 
-    logger.info(f"Getting information about VM {vm_id}")
-    vm = validate_call(lambda: one.vm.info(vm_id))
-    template = dict(vm.TEMPLATE)
+    for vm_id in vm_ids:
+        logger.info(f"Getting information about VM {vm_id}")
 
-    logger.debug(template)
+        vm = validate_call(lambda: one.vm.info(vm_id))
+        template = dict(vm.TEMPLATE)
 
-    if 'NIC' not in template:
-        logger.error("Serverless Runtime VM does not have NIC")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_OFFLOAD)
+        logger.debug(template)
 
-    # ip = template['NIC'][0]['IP'] Multiple NIC turns NIC into an array
-    # VMs with 1 NIC assumed
-    if 'IP' in template["NIC"]:
-        ip = template["NIC"]["IP"]
-        runtime_endpoint = f"http://{ip}:{SR_PORT}"
-    elif 'IP6' in template["NIC"]:
-        ip = template["NIC"]["IP6"]
-        runtime_endpoint = f"http://[{ip}]:{SR_PORT}"
-    else:
-        logger.error(f"Serverless Runtime VM '{vm_id}' does not have IP")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_OFFLOAD)
+        if 'NIC' not in template:
+            logger.error(f"Serverless Runtime VM {vm_id} does not have NIC")
+            continue
 
-    return runtime_endpoint
+        # ip = template['NIC'][0]['IP'] Multiple NIC turns NIC into an array
+        # VMs with 1 NIC assumed
+        if 'IP' in template["NIC"]:
+            ip = template["NIC"]["IP"]
+            runtime_endpoint = f"http://{ip}:{SR_PORT}"
+        elif 'IP6' in template["NIC"]:
+            ip = template["NIC"]["IP6"]
+            runtime_endpoint = f"http://[{ip}]:{SR_PORT}"
+        else:
+            logger.error(f"Serverless Runtime VM '{vm_id}' does not have IP")
+            continue
+
+        return runtime_endpoint
+
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_OFFLOAD)
 
 
 
