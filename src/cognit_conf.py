@@ -11,6 +11,7 @@ DEFAULT = {
     'one_xmlrpc': 'http://localhost:2633/RPC2',
     'oneflow': 'http://localhost:2474',
     'cognit_frontend': 'http://localhost:1338',
+    'cluster_id': 0,
     'log_level': 'info'
 }
 
@@ -36,6 +37,7 @@ config.update(user_config)
 ONE_XMLRPC = config['one_xmlrpc']
 ONEFLOW = config['oneflow']
 COGNIT_FRONTEND = config['cognit_frontend']
+CLUSTER_ID = config['cluster_id']
 
 for endpoint in [ONE_XMLRPC, ONEFLOW]:
     one = urlparse(endpoint)

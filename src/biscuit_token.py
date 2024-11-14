@@ -29,6 +29,8 @@ def load_key():
 
 
 def authorize_token(token64: str) -> str:
+    attempted = False
+
     def attempt_authorization():
         token = Biscuit.from_base64(token64, public_key)
         authorizer = Authorizer("""
@@ -44,5 +46,10 @@ def authorize_token(token64: str) -> str:
     try:
         attempt_authorization()
     except Exception as e:
-        load_key()  # maybe the key has been renewed
+        if attempted is True:  # maybe the key has been renewed
+            raise e
+
+        attempted = True
+
+        load_key()
         attempt_authorization()
