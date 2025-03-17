@@ -12,6 +12,7 @@ DEFAULT = {
     'oneflow': 'http://localhost:2474',
     'cognit_frontend': 'http://localhost:1338',
     'cluster_id': 0,
+    'broker': 'http://localhost:5672',
     'log_level': 'info'
 }
 
@@ -38,6 +39,7 @@ ONE_XMLRPC = config['one_xmlrpc']
 ONEFLOW = config['oneflow']
 COGNIT_FRONTEND = config['cognit_frontend']
 CLUSTER_ID = config['cluster_id']
+BROKER = config['broker']
 
 for endpoint in [ONE_XMLRPC, ONEFLOW]:
     one = urlparse(endpoint)

@@ -1,55 +1,29 @@
-import pyone
 from fastapi import HTTPException, status
-import os
 import requests
-from requests.auth import HTTPBasicAuth
 import json
-from decimal import Decimal
-import sys
+import logging
 
 from cognit_models import ExecutionMode
-
-DOCUMENT_TYPES = {
-    'APP_REQUIREMENT': 1338,
-    'FUNCTION': 1339
-}
+import opennebula
 
 ERROR_OFFLOAD = "Failed to offload function"
 
 SR_PORT = 8000
+CLUSTER_ID = None
 LB_MODE = "cpu"
 
-ONE_XMLRPC = None  # Set when importing module
-ONEFLOW = None
-CLUSTER_ID = None
-
-# The user doesn't control the SR VMs. These VMs shared among every user should be under the control
-# of an admin of sorts of the Function Executing group. Could also be oneadmin.
-# The user only owns the app_requirements and function documents. SERVERLESS means no server controlled
-HOME = os.path.expanduser("~")
-ONE_AUTH = f"{HOME}/.one/one_auth"  # Serverless Runtimes owner credentials
-BASIC_AUTH = {}
-
-one = None
-logger = None
-
+logger: logging.Logger = None
+one: opennebula.OpenNebulaClient = None
 
 def execute_function(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
-    document = get_document(function_id, "FUNCTION")
-    function = dict(document.TEMPLATE)
+    function = one.get_function(function_id)
+    requirement = one.get_app_requirement(app_req_id)
 
-    document = get_document(app_req_id, "APP_REQUIREMENT")
-    requirement = dict(document.TEMPLATE)
     flavour = requirement["FLAVOUR"]
-
-    logger.debug(function)
-    logger.debug(requirement)
-
-    # Get ideal VM based on LB logic
     services = get_runtime_services(flavour)
 
+    # Get ideal VM based on LB logic
     vm_ids = get_sr_vm_ids(services)
-
     endpoint = get_runtime_endpoint(vm_ids)
 
     return offload_function(function=function, mode=mode, app_req_id=app_req_id, endpoint=endpoint, params=parameters)
@@ -64,23 +38,10 @@ def get_runtime_services(flavour: str) -> list[dict]:
     Returns:
         list[dict]: oneflow instances documents
     """
-    uri = f"{ONEFLOW}/service"
-
-    logger.info("Getting existing oneflow services")
-    response = requests.get(uri, auth=HTTPBasicAuth(
-        BASIC_AUTH['user'], BASIC_AUTH['password']))
-
-    if response.status_code != 200:
-        logger.error(response.json())
-        raise HTTPException(
-            status_code=response.status_code, detail="Could not read Serverless Runtime instances")
-
-    services = response.json()
-    logger.debug(services)
 
     flavour_services = []
 
-    for service in services["DOCUMENT_POOL"]["DOCUMENT"]:
+    for service in one.get_services():
 
         if service["NAME"] == flavour and service["TEMPLATE"]["BODY"]["roles"][0]["name"] == "FAAS" and service["TEMPLATE"]["BODY"]["roles"][0]["cardinality"] > 0:
             flavour_services.append(service)
@@ -105,7 +66,7 @@ def get_sr_vm_ids(services: list[dict]) -> list[int]:
             vm_ids_sr.append(vm["deploy_id"])
 
     # Get every RUNNING VM on a cluster
-    vmpool_ec = one.vmpool.infoextended(-2, -1, -1, 3, f'CID={CLUSTER_ID}').VM
+    vmpool_ec = one.cluster_vms(CLUSTER_ID)
     vm_ids_ec = []
 
     for vm in vmpool_ec:
@@ -124,14 +85,10 @@ def get_sr_vms_by_cpu(sr_vm_ids: list[int]) -> list:
     # this group would only own SR VMs
     # currently it reads every VM in the pool
 
-    logger.info("Reading VMs last monitoring metrics")
-    monitoring_entries = validate_call(
-        lambda: one.vmpool.monitoring(-2, 0).MONITORING)
-
     cpu_load = {}
 
     # get cpu load metrics of each vm in sr_vm_ids
-    for vm_monitoring in monitoring_entries:
+    for vm_monitoring in one.vmpool_monitoring():
         cpu = vm_monitoring.CPU
 
         if cpu is None:
@@ -158,10 +115,7 @@ def get_runtime_endpoint(vm_ids: list[int]):
         logger.warning(f"Unknown load balance mode '{LB_MODE}'. Using CPU Load Balance mode.")
 
     for vm_id in vm_ids:
-        logger.info(f"Getting information about VM {vm_id}")
-
-        vm = validate_call(lambda: one.vm.info(vm_id))
-        template = dict(vm.TEMPLATE)
+        template = one.vm_info(vm_id)
 
         logger.debug(template)
 
@@ -208,15 +162,14 @@ def get_runtime_endpoint(vm_ids: list[int]):
 #         "faas_task_uuid": "ac249cb6-8425-11ef-b968-c297e15a9b8f"
 #     }
 # }
-
-def offload_function(endpoint: str, function: dict, app_req_id: int, mode: ExecutionMode, params: list[str]):
+# Direct SR function execution offloading is deprecated. Queue the execution request instead
+def offload_function(endpoint: str, offload_request: dict, mode: ExecutionMode):
     """Offload the function execution to the Serverless Runtime instance
 
     Args:
         endpoint (str): Where the Serverless Runtime Instance is runninr
-        function (dict): Function to be executed
+        offload_request (dict): Function to be executed with required execution context
         mode (ExecutionMode): sync or async execution
-        params (list[str]): Function input parameters
 
     Returns:
         _type_: Response from the SR App
@@ -228,19 +181,11 @@ def offload_function(endpoint: str, function: dict, app_req_id: int, mode: Execu
     elif mode == "async":
         url = f"{endpoint}/v1/faas/execute-async"
 
-    # function document keys are UPPERCASE in OpenNebula DB, but lowercase on SR model
-    function_lowercase = {k.lower(): v for k, v in function.items()}
-
-    function_lowercase["params"] = params
-    function_lowercase["app_req_id"] = app_req_id
-
-    logger.info(f"Offloading function to {url}")
-    logger.debug(function_lowercase)
-    logger.debug(f"Function parameters: {params}")
-    logger.debug(f"App Requirements: {app_req_id}")
+    logger.info(f"Sending function offload to {url}")
+    logger.debug(offload_request)
 
     try:
-        response = requests.post(url=url, data=json.dumps(function_lowercase))
+        response = requests.post(url=url, data=json.dumps(offload_request))
     except Exception as e:
         logger.error(e)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=ERROR_OFFLOAD)
@@ -251,53 +196,3 @@ def offload_function(endpoint: str, function: dict, app_req_id: int, mode: Execu
 
     return response.json()
 
-# Helpers
-
-
-def create_client():
-    global one
-
-    if os.path.exists(ONE_AUTH):
-        with open(ONE_AUTH, 'r') as file:
-            session = file.read().strip('\n')
-
-            credentials = session.split(":")
-
-            BASIC_AUTH["user"] = credentials[0]
-            BASIC_AUTH["password"] = credentials[1]
-    else:
-        sys.stderr.write(f"The file {ONE_AUTH} does not exist.")
-        exit(1)
-
-    one = pyone.OneServer(ONE_XMLRPC, session=session)
-
-
-def get_document(document_id: int, type_str: str):
-    logger.info(f"Getting information about document {document_id}")
-    document = validate_call(lambda: one.document.info(document_id))
-
-    type = DOCUMENT_TYPES[type_str]
-
-    if int(document.TYPE) != type:
-        error = f"Resource {document_id} is not of type {type_str}"
-        logger.error(error)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found")
-
-    return document
-
-
-def validate_call(xmlrpc_call):
-    try:
-        return xmlrpc_call()
-    except pyone.OneAuthenticationException as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-    except pyone.OneAuthorizationException as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
-    except pyone.OneNoExistsException as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
