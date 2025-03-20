@@ -33,7 +33,6 @@ app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 async def root():
     return RedirectResponse(url="/docs")
 
-# TODO: Execution timeout
 @app.post("/v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
 async def execute_function(
     id: Annotated[int, Path(title="Document ID of the Function")],

@@ -10,14 +10,14 @@ import requests
 import tests_common as tests
 
 def sr_offload(offload_request: dict) -> str:
-    """Serverless Runtime faas requests client. 
+    """Serverless Runtime faas requests client.
 
     Args:
         offload_request (dict): dictionary with ExecSync params as required by the Serverless Runtime API
 
     Returns:
         str: result dictionary containing the return code and the body of the execution
-    """    
+    """
     logger.info(f"Sending function offload to {SR_ENDPOINT}")
     logger.debug(offload_request)
 
@@ -72,7 +72,7 @@ def connect_to_broker(broker_endpoint: str) -> pika.BlockingConnection:
     connection_parameters = pika.ConnectionParameters(
         host=endpoint.hostname, port=endpoint.port)
 
-    if broker_endpoint.scheme == 'ssl':
+    if endpoint.scheme == 'ssl':
         # trust ssl certificates
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
@@ -103,8 +103,6 @@ channel = connection.channel()
 # listen for execution requests on this queue bound to a flavour
 channel.queue_declare(queue=FLAVOUR)
 channel.basic_qos(prefetch_count=1)  # only process 1 request at a time
-# publish execution results in this exchange
-channel.exchange_declare(exchange="results", exchange_type="direct")
 
 channel.basic_consume(queue=FLAVOUR, on_message_callback=subscriber_function)
 logger.info(f"Waiting for execution requests to flavour {FLAVOUR}")

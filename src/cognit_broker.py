@@ -1,13 +1,17 @@
 #!/usr/bin/env python
 import pika
+from pika.adapters.blocking_connection import BlockingChannel
 from urllib.parse import urlparse
 import ssl
 import json
 import logging
 import uuid
-from fastapi import HTTPException
+from fastapi import HTTPException, status
+import signal
 
 import opennebula
+
+TIMEOUT = 30 # Maybe should be config
 
 class BrokerClient:
 
@@ -42,7 +46,7 @@ class BrokerClient:
 
         return self.connection
 
-    def send_message(self, message: dict, routing_key: str, queue: str = '', exchange: str = ''):
+    def send_message(self, message: dict, routing_key: str, queue: str = '', exchange: str = '') -> BlockingChannel:
         self.connect()
         channel = self.connection.channel()
 
@@ -59,22 +63,15 @@ class BrokerClient:
             exchange=exchange, routing_key=routing_key, body=json.dumps(message))
 
         self.logger.info("Message queued")
-
         channel.close()
 
-    def receive_message(self, routing_key: str, exchange: str) -> str:
+    def receive_message(self, routing_key: str, queue: str) -> str:
         self.connect()
         channel = self.connection.channel()
 
-        channel.exchange_declare(exchange=exchange, exchange_type='direct')
-        queue = channel.queue_declare(
-            queue='', exclusive=True).method.queue  # TODO: exclusive ?
-        channel.queue_bind(exchange=exchange, queue=queue,
-                           routing_key=routing_key)
-
         result: dict = None
 
-        def callback(channel, method, properties, body):
+        def callback(channel: BlockingChannel, method, properties, body):
             nonlocal result
             result = json.loads(body)
 
@@ -97,6 +94,8 @@ class Executioner(BrokerClient):
     def __init__(self, endpoint: str, logger: logging.Logger, one: opennebula.OpenNebulaClient):
         self.one = one
         super().__init__(endpoint, logger)
+        channel = self.connection.channel()
+        channel.exchange_declare(exchange='results', exchange_type='direct')
 
     def request_execution(self, request: dict, flavour: str) -> str:
         # Tag offload request with an ID in order to wait for results
@@ -107,12 +106,20 @@ class Executioner(BrokerClient):
         self.logger.info("Requesting execution")
         self.logger.debug(execution_request)
 
+        # Create temporary results queue to
+        # avoid race condition with exchange dropping result messages before result queue exists
+        channel = self.connection.channel()
+        temp_queue = channel.queue_declare(queue=f"results_{request_id}", exclusive=True, auto_delete=True).method.queue
+        channel.queue_bind(exchange='results', queue=temp_queue, routing_key=request_id)
+        channel.close
+
         self.send_message(message=execution_request, routing_key=flavour)
 
         return request_id
 
     def await_execution(self, request_id: str) -> str:
-        result = self.receive_message(request_id, 'results')
+        queue = f"results_{request_id}"
+        result = self.receive_message(routing_key=request_id, queue=queue)
 
         self.logger.info("Execution result received")
         self.logger.debug(result)
@@ -129,8 +136,15 @@ class Executioner(BrokerClient):
         # Publish execution request to an exchange. Use flavour as routing key.
         execution_id = self.request_execution(
             execution_request, requirement["FLAVOUR"])
-        # Subscribe to the execution results queue. Wait for execution result.
-        result = self.await_execution(execution_id)
+
+        # Protect vs SR offload timeouts
+        signal.signal(signal.SIGALRM, _timeout_handler)
+        signal.alarm(TIMEOUT)
+
+        try:
+            result = self.await_execution(execution_id)
+        finally:
+            signal.alarm(0)  # Cancel the timeout
 
         if result["code"] != 200:
             raise HTTPException(status_code=result["code"], detail=result["message"])
@@ -147,3 +161,10 @@ def prepare_execution_request(function_document: dict, params: list[str], app_re
     request["app_req_id"] = app_req_id
 
     return request
+
+
+def _timeout_handler(signum, frame):
+    raise HTTPException(
+        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        detail="Function execution timed out"
+    )
