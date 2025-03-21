@@ -7,11 +7,12 @@ import json
 import logging
 import uuid
 from fastapi import HTTPException, status
-import signal
 
 import opennebula
 
-TIMEOUT = 30 # Maybe should be config
+EXCHANGES = { # list of exchanges to create when connecting to the broker
+    'direct': ['results']
+}
 
 class BrokerClient:
 
@@ -43,6 +44,19 @@ class BrokerClient:
 
             self.logger.info(
                 f"Connection established to broker {self.endpoint}")
+
+            channel = self.connection.channel()
+            self.logger.info("Ensuring required exchanges exist")
+
+            for type in EXCHANGES:
+                exchanges = EXCHANGES[type]
+
+                for exchange in exchanges:
+                    channel.exchange_declare(exchange=exchange, exchange_type=type)
+                    self.logger.debug(
+                        f"Declared exchange {type} exchange {exchange}")
+
+            channel.close
 
         return self.connection
 
@@ -89,13 +103,11 @@ class BrokerClient:
         return result
 
 
-class Executioner(BrokerClient):
+class Executioner():
 
-    def __init__(self, endpoint: str, logger: logging.Logger, one: opennebula.OpenNebulaClient):
-        self.one = one
-        super().__init__(endpoint, logger)
-        channel = self.connection.channel()
-        channel.exchange_declare(exchange='results', exchange_type='direct')
+    def __init__(self, broker_client: BrokerClient, one_client: opennebula.OpenNebulaClient):
+        self.one = one_client
+        self.broker = broker_client
 
     def request_execution(self, request: dict, flavour: str) -> str:
         # Tag offload request with an ID in order to wait for results
@@ -103,26 +115,26 @@ class Executioner(BrokerClient):
         execution_request = {"request_id": request_id,
                              "payload": request}
 
-        self.logger.info("Requesting execution")
-        self.logger.debug(execution_request)
+        self.broker.logger.info("Requesting execution")
+        self.broker.logger.debug(execution_request)
 
         # Create temporary results queue to
         # avoid race condition with exchange dropping result messages before result queue exists
-        channel = self.connection.channel()
+        channel = self.broker.connection.channel()
         temp_queue = channel.queue_declare(queue=f"results_{request_id}", exclusive=True, auto_delete=True).method.queue
         channel.queue_bind(exchange='results', queue=temp_queue, routing_key=request_id)
         channel.close
 
-        self.send_message(message=execution_request, routing_key=flavour)
+        self.broker.send_message(message=execution_request, routing_key=flavour)
 
         return request_id
 
     def await_execution(self, request_id: str) -> str:
         queue = f"results_{request_id}"
-        result = self.receive_message(routing_key=request_id, queue=queue)
+        result = self.broker.receive_message(routing_key=request_id, queue=queue)
 
-        self.logger.info("Execution result received")
-        self.logger.debug(result)
+        self.broker.logger.info("Execution result received")
+        self.broker.logger.debug(result)
 
         return result
 
@@ -137,17 +149,11 @@ class Executioner(BrokerClient):
         execution_id = self.request_execution(
             execution_request, requirement["FLAVOUR"])
 
-        # Protect vs SR offload timeouts
-        signal.signal(signal.SIGALRM, _timeout_handler)
-        signal.alarm(TIMEOUT)
-
-        try:
-            result = self.await_execution(execution_id)
-        finally:
-            signal.alarm(0)  # Cancel the timeout
+        result = self.await_execution(execution_id)
 
         if result["code"] != 200:
-            raise HTTPException(status_code=result["code"], detail=result["message"])
+            raise HTTPException(
+                status_code=result["code"], detail=result["message"])
 
         return result["message"]
 
@@ -161,10 +167,3 @@ def prepare_execution_request(function_document: dict, params: list[str], app_re
     request["app_req_id"] = app_req_id
 
     return request
-
-
-def _timeout_handler(signum, frame):
-    raise HTTPException(
-        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-        detail="Function execution timed out"
-    )

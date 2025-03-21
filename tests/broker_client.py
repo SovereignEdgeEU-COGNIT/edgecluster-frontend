@@ -13,7 +13,9 @@ logger = tests.logger
 conf = tests.CONF
 
 broker_endpoint :str = conf["broker"]
-broker_client = cognit_broker.Executioner(endpoint=broker_endpoint, logger=logger, one=tests.one_client)
+broker_client = cognit_broker.BrokerClient(
+    endpoint=broker_endpoint, logger=logger)
+broker_client = cognit_broker.Executioner(broker_client=broker_client, one_client=tests.one_client)
 
 queues :dict = conf["flavours"]
 offload_requests :dict = conf["offload_requests"]
