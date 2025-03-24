@@ -1,0 +1,35 @@
+oned: http://localhost:2633
+oneflow: http://localhost:2474
+cognit_frontend: http://localhost:1338
+edge_cluster_frontend: http://localhost:1339
+broker: http://localhost:5672
+flavours: # Each flavour will have its own execution request queue
+  - Nature
+  - SmartCities
+execution:
+  sync:
+    app_req_id: 37
+    execution_mode: sync
+    function_id: 39
+    params:
+    - gAVLAi4=
+    - gAVLAy4=
+    - gAVLBC4=
+offload_requests: # Every execution result, good or bad gets queued to the results queue
+  bad: # Fails with 400: incorrect padding
+    app_req_id: 39
+    fc: gAWVHAIAAAAAAACMF2Nsb3VkcGlja2xlLmNsb3VkcGlja2xllIwOX21ha2VfZnVuY3Rpb26Uk5QoaACMDV9idWlsdGluX3R5cGWUk5SMCENvZGVUeXBllIWUUpQoSwNLAEsASwNLAktDQwx8AHwBFAB8AhQAUwCUToWUKYwBYZSMAWKUjAFjlIeUjGIvaG9tZS9hYnJvc2EvcmVwb3MvZ2l0aHViLWRldmljZS1ydW50aW1lLXB5L2NvZ25pdC90ZXN0L2ludGVncmF0aW9uL3Rlc3RfaW50ZWdyYXRpb25fU1JfY29udGV4dC5weZSMCmR1bW15X2Z1bmOUS5pDAgwBlCkpdJRSlH2UTk5OdJRSlIwcY2xvdWRwaWNrbGUuY2xvdWRwaWNrbGVfZmFzdJSMEl9mdW5jdGlvbl9zZXRzdGF0ZZSTlGgVfZR9lCiMCF9fbmFtZV9flGgPjAxfX3F1YWxuYW1lX1
+    fc_hash: 83f8679345fd4b5d215f2b8fcd7c7d51b154084494e92b7ca0a8a5ccf64aafe8
+    lang: PY
+    params:
+    - gAVLAi4=
+    - gAVLAy4=
+    - gAVLBC4=
+  good:
+    app_req_id: 39
+    fc: gAWVKwIAAAAAAACMF2Nsb3VkcGlja2xlLmNsb3VkcGlja2xllIwOX21ha2VfZnVuY3Rpb26Uk5QoaACMDV9idWlsdGluX3R5cGWUk5SMCENvZGVUeXBllIWUUpQoSwJLAEsASwJLAktDQwh8AHwBFwBTAJROhZQpjAFhlIwBYpSGlIx2L21udC9jL1VzZXJzL2dwZXJhbHRhL09uZURyaXZlIC0gSUtFUkxBTiBTLkNPT1AvUFJPWUVDVE9TL0VVUk9QRU9TL0NPR05JVC9EZXNhcnJvbGxvIFdQMy9QcnVlYmFzL3Rlc3Rfc2VyaWFsaXphdGlvbi5weZSMCm15ZnVuY3Rpb26USxJDAggBlCkpdJRSlH2UKIwLX19wYWNrYWdlX1+UTowIX19uYW1lX1+UjAhfX21haW5fX5SMCF9fZmlsZV9flGgNdU5OTnSUUpSMHGNsb3VkcGlja2xlLmNsb3VkcGlja2xlX2Zhc3SUjBJfZnVuY3Rpb25fc2V0c3RhdGWUk5RoGH2UfZQoaBRoDowMX19xdWFsbmFtZV9flGgOjA9fX2Fubm90YXRpb25zX1+UfZSMDl9fa3dkZWZhdWx0c19flE6MDF9fZGVmYXVsdHNfX5ROjApfX21vZHVsZV9flGgVjAdfX2RvY19flE6MC19fY2xvc3VyZV9flE6MF19jbG91ZHBpY2tsZV9zdWJtb2R1bGVzlF2UjAtfX2dsb2JhbHNfX5R9lHWGlIZSMC4=
+    fc_hash: 83f8679345fd4b5d215f2b8fcd7c7d51b154084494e92b7ca0a8a5ccf64aafe8
+    lang: PY
+    params:
+    - gAVLAi4=
+    - gAVLAy4=

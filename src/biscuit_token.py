@@ -2,6 +2,7 @@ from biscuit_auth import Authorizer, Biscuit, PublicKey
 from datetime import datetime, timezone
 import requests
 import sys
+import re
 
 KEY_PATH = None
 public_key = None
@@ -28,11 +29,12 @@ def load_key():
     public_key = PublicKey.from_hex(public_key_hex_string)
 
 
-def authorize_token(token64: str) -> str:
+def authorize_token(token64: str) -> list[str]:
     attempted = False
 
+    token = Biscuit.from_base64(token64, public_key)
+
     def attempt_authorization():
-        token = Biscuit.from_base64(token64, public_key)
         authorizer = Authorizer("""
         time({now});
         allow if user($u), password($p);
@@ -53,3 +55,17 @@ def authorize_token(token64: str) -> str:
 
         load_key()
         attempt_authorization()
+
+    token_body = token.block_source(0)
+
+    credentials: list[str] = []
+
+    # extract credentials from token
+    for i in ['user', 'password']:
+        match = re.search(rf'{i}\("(.+?)"\);', token_body)
+
+
+        if match:
+            credentials.append(match.group(1))
+
+    return credentials
