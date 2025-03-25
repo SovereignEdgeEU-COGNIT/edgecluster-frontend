@@ -10,9 +10,10 @@ from fastapi import HTTPException, status
 
 import opennebula
 
-EXCHANGES = { # list of exchanges to create when connecting to the broker
+EXCHANGES = {  # list of exchanges to create when connecting to the broker
     'direct': ['results']
 }
+
 
 class BrokerClient:
 
@@ -52,7 +53,8 @@ class BrokerClient:
                 exchanges = EXCHANGES[type]
 
                 for exchange in exchanges:
-                    channel.exchange_declare(exchange=exchange, exchange_type=type)
+                    channel.exchange_declare(
+                        exchange=exchange, exchange_type=type)
                     self.logger.debug(
                         f"Declared exchange {type} exchange {exchange}")
 
@@ -121,17 +123,21 @@ class Executioner():
         # Create temporary results queue to
         # avoid race condition with exchange dropping result messages before result queue exists
         channel = self.broker.connection.channel()
-        temp_queue = channel.queue_declare(queue=f"results_{request_id}", exclusive=True, auto_delete=True).method.queue
-        channel.queue_bind(exchange='results', queue=temp_queue, routing_key=request_id)
+        temp_queue = channel.queue_declare(
+            queue=f"results_{request_id}", exclusive=True, auto_delete=True).method.queue
+        channel.queue_bind(exchange='results',
+                           queue=temp_queue, routing_key=request_id)
         channel.close
 
-        self.broker.send_message(message=execution_request, routing_key=flavour)
+        self.broker.send_message(
+            message=execution_request, routing_key=flavour)
 
         return request_id
 
     def await_execution(self, request_id: str) -> str:
         queue = f"results_{request_id}"
-        result = self.broker.receive_message(routing_key=request_id, queue=queue)
+        result = self.broker.receive_message(
+            routing_key=request_id, queue=queue)
 
         self.broker.logger.info("Execution result received")
         self.broker.logger.debug(result)

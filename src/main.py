@@ -27,16 +27,19 @@ broker_client = cognit_broker.BrokerClient(endpoint=conf.BROKER, logger=logger)
 
 app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 
+
 @app.get("/")
 async def root():
     return RedirectResponse(url="/docs")
+
 
 @app.post("/v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
 async def execute_function(
     id: Annotated[int, Path(title="Document ID of the Function")],
     parameters: list[str],
     app_req_id: Annotated[int, Query(title="Document ID of the App Requirement")],
-    mode: Annotated[ExecutionMode, Query(title="Execution Mode")], # Not needed with broker
+    # Not needed with broker
+    mode: Annotated[ExecutionMode, Query(title="Execution Mode")],
     token: Annotated[str | None, Header()] = None
 ) -> dict:
 
@@ -46,14 +49,16 @@ async def execute_function(
     one_client = opennebula.OpenNebulaClient(
         oned=conf.ONE_XMLRPC, oneflow=conf.ONEFLOW, username=credentials[0], password=credentials[1], logger=logger)
 
-    executioner = cognit_broker.Executioner(broker_client=broker_client, one_client=one_client)
+    executioner = cognit_broker.Executioner(
+        broker_client=broker_client, one_client=one_client)
 
     # Protect vs possible execution timeouts
     signal.signal(signal.SIGALRM, _timeout_handler)
     signal.alarm(TIMEOUT)
 
     try:
-        result = executioner.execute_function(function_id=id, app_req_id=app_req_id, parameters=parameters)
+        result = executioner.execute_function(
+            function_id=id, app_req_id=app_req_id, parameters=parameters)
     finally:
         signal.alarm(0)  # Cancel the timeout
 
