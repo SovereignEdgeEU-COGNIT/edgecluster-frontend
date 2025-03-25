@@ -13,7 +13,7 @@ from cognit_models import ExecutionMode
 import cognit_broker
 import opennebula
 
-TIMEOUT = 30  # Maybe should be config
+TIMEOUT = 30
 
 logger = logging.getLogger("uvicorn")
 if conf.LOG_LEVEL == 'debug':  # uvicorn run log parameter is ignored
@@ -51,15 +51,19 @@ async def execute_function(
     executioner = cognit_broker.Executioner(
         broker_client=broker_client, one_client=one_client)
 
-    # Protect vs possible execution timeouts
-    signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(TIMEOUT)
+    # result = with_timeout(
+    #     executioner.execute_function,
+    #     function_id=id,
+    #     app_req_id=app_req_id,
+    #     parameters=parameters,
+    #     mode=mode.value
+    # )
 
-    try:
-        result = executioner.execute_function(
-            function_id=id, app_req_id=app_req_id, parameters=parameters, mode=mode.value)
-    finally:
-        signal.alarm(0)  # Cancel the timeout
+    # Let nginx handle the timeouts. 60 seconds is the default
+    result = executioner.execute_function(function_id=id,
+                                          app_req_id=app_req_id,
+                                          parameters=parameters,
+                                          mode=mode.value)
 
     return result
 
@@ -87,9 +91,23 @@ def authorize(token) -> list[str]:
             status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
-if __name__ == "__main__":
-    uvicorn.run("main:app", host=conf.HOST, port=conf.PORT,
-                reload=False, log_level=conf.LOG_LEVEL)
+def with_timeout(func: callable, *args, **kwargs):
+    """Handle timeouts according to specified timer
+
+    Args:
+        func (callable): The function that might time out
+
+    Returns:
+        _type_: Whatever the function returns
+    """
+    # Protect vs possible execution timeouts
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(TIMEOUT)
+
+    try:
+        return func(*args, **kwargs)
+    finally:
+        signal.alarm(0)  # Cancel the timeout
 
 
 def _timeout_handler(signum, frame):
@@ -97,3 +115,8 @@ def _timeout_handler(signum, frame):
         status_code=status.HTTP_504_GATEWAY_TIMEOUT,
         detail="Function execution timed out"
     )
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host=conf.HOST, port=conf.PORT,
+                reload=False, log_level=conf.LOG_LEVEL)
