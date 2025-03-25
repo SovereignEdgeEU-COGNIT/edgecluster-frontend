@@ -16,7 +16,6 @@ EXCHANGES = {  # list of exchanges to create when connecting to the broker
 
 
 class BrokerClient:
-
     def __init__(self, endpoint: str, logger: logging.Logger):
         self.endpoint = endpoint
         self.logger = logger
@@ -56,7 +55,7 @@ class BrokerClient:
                     channel.exchange_declare(
                         exchange=exchange, exchange_type=type)
                     self.logger.debug(
-                        f"Declared exchange {type} exchange {exchange}")
+                        f"Declared {type} exchange \"{exchange}\"")
 
             channel.close
 
@@ -111,10 +110,21 @@ class Executioner():
         self.one = one_client
         self.broker = broker_client
 
-    def request_execution(self, request: dict, flavour: str) -> str:
+    def request_execution(self, request: dict, flavour: str, mode: str) -> str:
+        """Queue an execution request to be processed by an SR instance
+
+        Args:
+            request (dict): Execution request payload as expected by the SR API
+            flavour (str): Flavour Queue the SR is responsible for processing requests from
+            mode (str): Execution mode of the function, sync or async
+
+        Returns:
+            str: Request ID of the requested execution
+        """
         # Tag offload request with an ID in order to wait for results
         request_id = str(uuid.uuid4())
         execution_request = {"request_id": request_id,
+                             "mode": mode,
                              "payload": request}
 
         self.broker.logger.info("Requesting execution")
@@ -135,16 +145,15 @@ class Executioner():
         return request_id
 
     def await_execution(self, request_id: str) -> str:
-        queue = f"results_{request_id}"
         result = self.broker.receive_message(
-            routing_key=request_id, queue=queue)
+            routing_key=request_id, queue=f"results_{request_id}")
 
         self.broker.logger.info("Execution result received")
         self.broker.logger.debug(result)
 
         return result
 
-    def execute_function(self, function_id: int, app_req_id: int, parameters: list[str]) -> dict:
+    def execute_function(self, function_id: int, app_req_id: int, parameters: list[str], mode: str) -> dict:
         function = self.one.get_function(function_id)
         requirement = self.one.get_app_requirement(app_req_id)
 
@@ -153,7 +162,7 @@ class Executioner():
 
         # Publish execution request to an exchange. Use flavour as routing key.
         execution_id = self.request_execution(
-            execution_request, requirement["FLAVOUR"])
+            execution_request, requirement["FLAVOUR"], mode=mode)
 
         result = self.await_execution(execution_id)
 

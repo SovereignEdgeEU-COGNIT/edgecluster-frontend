@@ -38,7 +38,6 @@ async def execute_function(
     id: Annotated[int, Path(title="Document ID of the Function")],
     parameters: list[str],
     app_req_id: Annotated[int, Query(title="Document ID of the App Requirement")],
-    # Not needed with broker
     mode: Annotated[ExecutionMode, Query(title="Execution Mode")],
     token: Annotated[str | None, Header()] = None
 ) -> dict:
@@ -58,7 +57,7 @@ async def execute_function(
 
     try:
         result = executioner.execute_function(
-            function_id=id, app_req_id=app_req_id, parameters=parameters)
+            function_id=id, app_req_id=app_req_id, parameters=parameters, mode=mode.value)
     finally:
         signal.alarm(0)  # Cancel the timeout
 

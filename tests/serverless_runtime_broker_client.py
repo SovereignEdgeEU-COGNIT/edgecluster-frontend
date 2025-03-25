@@ -2,6 +2,7 @@
 
 import json
 import pika
+from pika.adapters.blocking_connection import BlockingChannel
 import sys
 from urllib.parse import urlparse
 import ssl
@@ -33,14 +34,8 @@ def sr_offload(offload_request: dict) -> str:
     return json.dumps(result)
 
 
-def subscriber_function(channel, method, properties, body):
+def subscriber_function(channel: BlockingChannel, method, properties, body):
     """Function used as callback when opening a channel for consumption. It contains the execution request handling and result delivery logic.
-
-    Args:
-        channel (_type_): _description_
-        method (_type_): _description_
-        properties (_type_): _description_
-        body (_type_): _description_
     """
     execution_request = json.loads(body)
     request_id = execution_request["request_id"]
@@ -90,15 +85,15 @@ def connect_to_broker(broker_endpoint: str) -> pika.BlockingConnection:
 
 # Program Configuration
 FLAVOUR = sys.argv[1]
-SR_ENDPOINT = 'http://[::]:8000'
 BROKER = 'http://localhost:5672'
+SR_ENDPOINT = 'http://[::]:8000' # could be hardcoded as the SR API and the SR broker client run in the same host
 
 logger = tests.logger
 
 # Initialize connection
 connection = connect_to_broker(BROKER)
 
-# Create a channel to
+# Create a channel to interact with queues and exchange
 channel = connection.channel()
 # listen for execution requests on this queue bound to a flavour
 channel.queue_declare(queue=FLAVOUR)
