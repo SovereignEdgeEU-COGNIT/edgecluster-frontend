@@ -10,12 +10,12 @@ from fastapi import HTTPException, status
 
 import opennebula
 
-EXCHANGES = { # list of exchanges to create when connecting to the broker
+EXCHANGES = {  # list of exchanges to create when connecting to the broker
     'direct': ['results']
 }
 
-class BrokerClient:
 
+class BrokerClient:
     def __init__(self, endpoint: str, logger: logging.Logger):
         self.endpoint = endpoint
         self.logger = logger
@@ -52,9 +52,10 @@ class BrokerClient:
                 exchanges = EXCHANGES[type]
 
                 for exchange in exchanges:
-                    channel.exchange_declare(exchange=exchange, exchange_type=type)
+                    channel.exchange_declare(
+                        exchange=exchange, exchange_type=type)
                     self.logger.debug(
-                        f"Declared exchange {type} exchange {exchange}")
+                        f"Declared {type} exchange \"{exchange}\"")
 
             channel.close
 
@@ -109,10 +110,21 @@ class Executioner():
         self.one = one_client
         self.broker = broker_client
 
-    def request_execution(self, request: dict, flavour: str) -> str:
+    def request_execution(self, request: dict, flavour: str, mode: str) -> str:
+        """Queue an execution request to be processed by an SR instance
+
+        Args:
+            request (dict): Execution request payload as expected by the SR API
+            flavour (str): Flavour Queue the SR is responsible for processing requests from
+            mode (str): Execution mode of the function, sync or async
+
+        Returns:
+            str: Request ID of the requested execution
+        """
         # Tag offload request with an ID in order to wait for results
         request_id = str(uuid.uuid4())
         execution_request = {"request_id": request_id,
+                             "mode": mode,
                              "payload": request}
 
         self.broker.logger.info("Requesting execution")
@@ -121,24 +133,27 @@ class Executioner():
         # Create temporary results queue to
         # avoid race condition with exchange dropping result messages before result queue exists
         channel = self.broker.connection.channel()
-        temp_queue = channel.queue_declare(queue=f"results_{request_id}", exclusive=True, auto_delete=True).method.queue
-        channel.queue_bind(exchange='results', queue=temp_queue, routing_key=request_id)
+        temp_queue = channel.queue_declare(
+            queue=f"results_{request_id}", exclusive=True, auto_delete=True).method.queue
+        channel.queue_bind(exchange='results',
+                           queue=temp_queue, routing_key=request_id)
         channel.close
 
-        self.broker.send_message(message=execution_request, routing_key=flavour)
+        self.broker.send_message(
+            message=execution_request, routing_key=flavour)
 
         return request_id
 
     def await_execution(self, request_id: str) -> str:
-        queue = f"results_{request_id}"
-        result = self.broker.receive_message(routing_key=request_id, queue=queue)
+        result = self.broker.receive_message(
+            routing_key=request_id, queue=f"results_{request_id}")
 
         self.broker.logger.info("Execution result received")
         self.broker.logger.debug(result)
 
         return result
 
-    def execute_function(self, function_id: int, app_req_id: int, parameters: list[str]) -> dict:
+    def execute_function(self, function_id: int, app_req_id: int, parameters: list[str], mode: str) -> dict:
         function = self.one.get_function(function_id)
         requirement = self.one.get_app_requirement(app_req_id)
 
@@ -147,7 +162,7 @@ class Executioner():
 
         # Publish execution request to an exchange. Use flavour as routing key.
         execution_id = self.request_execution(
-            execution_request, requirement["FLAVOUR"])
+            execution_request, requirement["FLAVOUR"], mode=mode)
 
         result = self.await_execution(execution_id)
 

@@ -13,6 +13,7 @@ from requests.auth import HTTPBasicAuth
 _home = os.path.expanduser("~")
 ONE_AUTH = f"{_home}/.one/one_auth"
 
+
 def get_one_auth() -> str:
     if os.path.exists(ONE_AUTH):
         with open(ONE_AUTH, 'r') as file:
@@ -24,6 +25,7 @@ def get_one_auth() -> str:
         exit(1)
 
     return credentials
+
 
 class OpenNebulaClient(object):
     DOCUMENT_TYPES = {
@@ -65,7 +67,8 @@ class OpenNebulaClient(object):
 
     def get_document(self, document_id: int, type_str: str) -> dict:
         self.logger.info(f"Getting information about document {document_id}")
-        document = _validate_xmlrpc_call(lambda: self.one.document.info(document_id))
+        document = _validate_xmlrpc_call(
+            lambda: self.one.document.info(document_id))
 
         type = self.DOCUMENT_TYPES[type_str]
 
@@ -116,4 +119,3 @@ def _validate_xmlrpc_call(xmlrpc_call):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-

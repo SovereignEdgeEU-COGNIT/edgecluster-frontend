@@ -64,7 +64,6 @@ def authorize_token(token64: str) -> list[str]:
     for i in ['user', 'password']:
         match = re.search(rf'{i}\("(.+?)"\);', token_body)
 
-
         if match:
             credentials.append(match.group(1))
 

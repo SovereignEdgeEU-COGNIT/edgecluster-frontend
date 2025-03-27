@@ -15,6 +15,7 @@ LB_MODE = "cpu"
 logger: logging.Logger = None
 one: opennebula.OpenNebulaClient = None
 
+
 def execute_function(function_id: int, app_req_id: int, parameters: list[str], mode: ExecutionMode):
     function = one.get_function(function_id)
     requirement = one.get_app_requirement(app_req_id)
@@ -106,13 +107,15 @@ def get_sr_vms_by_cpu(sr_vm_ids: list[int]) -> list:
     logger.debug(cpu_load_sorted)
     return cpu_load_sorted
 
+
 def get_runtime_endpoint(vm_ids: list[int]):
 
     # TODO: define LB logic when module is loaded. Generate the function.
     if LB_MODE == "cpu":
         vm_ids = get_sr_vms_by_cpu(vm_ids)
     else:
-        logger.warning(f"Unknown load balance mode '{LB_MODE}'. Using CPU Load Balance mode.")
+        logger.warning(
+            f"Unknown load balance mode '{LB_MODE}'. Using CPU Load Balance mode.")
 
     for vm_id in vm_ids:
         template = one.vm_info(vm_id)
@@ -139,7 +142,6 @@ def get_runtime_endpoint(vm_ids: list[int]):
 
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=ERROR_OFFLOAD)
-
 
 
 # EXAMPLE_FUNCTION = {
@@ -188,11 +190,12 @@ def offload_function(endpoint: str, offload_request: dict, mode: ExecutionMode):
         response = requests.post(url=url, data=json.dumps(offload_request))
     except Exception as e:
         logger.error(e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=ERROR_OFFLOAD)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=ERROR_OFFLOAD)
 
     if response.status_code != 200:
         logger.error(response.json())
-        raise HTTPException(status_code=response.status_code, detail=ERROR_OFFLOAD)
+        raise HTTPException(
+            status_code=response.status_code, detail=ERROR_OFFLOAD)
 
     return response.json()
-
