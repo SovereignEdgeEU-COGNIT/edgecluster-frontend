@@ -13,7 +13,7 @@ from cognit_models import ExecutionMode
 import cognit_broker
 import opennebula
 
-TIMEOUT = 30
+TIMEOUT = 600 # TODO: Make it configurable
 
 logger = logging.getLogger("uvicorn")
 if conf.LOG_LEVEL == 'debug':  # uvicorn run log parameter is ignored
@@ -51,19 +51,13 @@ async def execute_function(
     executioner = cognit_broker.Executioner(
         broker_client=broker_client, one_client=one_client)
 
-    # result = with_timeout(
-    #     executioner.execute_function,
-    #     function_id=id,
-    #     app_req_id=app_req_id,
-    #     parameters=parameters,
-    #     mode=mode.value
-    # )
-
-    # Let nginx handle the timeouts. 60 seconds is the default
-    result = executioner.execute_function(function_id=id,
-                                          app_req_id=app_req_id,
-                                          parameters=parameters,
-                                          mode=mode.value)
+    result = with_timeout(
+        executioner.execute_function,
+        function_id=id,
+        app_req_id=app_req_id,
+        parameters=parameters,
+        mode=mode.value
+    )
 
     return result
 
