@@ -7,7 +7,9 @@ import json
 import logging
 import uuid
 from fastapi import HTTPException, status
+import pydantic_core
 
+from cognit_models import ResultMessage
 import opennebula
 
 EXCHANGES = {  # list of exchanges to create when connecting to the broker
@@ -165,6 +167,14 @@ class Executioner():
             execution_request, requirement["FLAVOUR"], mode=mode)
 
         result = self.await_execution(execution_id)
+
+        try:
+            ResultMessage(**result)
+        except pydantic_core._pydantic_core.ValidationError as e:
+            self.broker.logger.error(e)
+            error = "Unexpected message from Serverless Runtime"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error)
 
         if result["code"] != 200:
             raise HTTPException(
