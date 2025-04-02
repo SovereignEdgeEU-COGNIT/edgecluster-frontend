@@ -7,6 +7,7 @@ import json
 import logging
 import uuid
 from fastapi import HTTPException, status
+from pika.exceptions import ChannelClosed
 import pydantic_core
 
 from cognit_models import ResultMessage
@@ -63,18 +64,20 @@ class BrokerClient:
 
         return self.connection
 
-    def send_message(self, message: dict, routing_key: str, queue: str = '', exchange: str = '') -> BlockingChannel:
+    def send_message(self, message: dict, routing_key: str, exchange: str = '') -> BlockingChannel:
         self.connect()
         channel = self.connection.channel()
 
         # default exchange uses queues based on routing keys
         if exchange == '':
             queue = routing_key
+            self.logger.info(f"Sending message to queue {routing_key}")
 
-        channel.queue_declare(queue=queue)
-
-        self.logger.info(f"Sending message to queue {queue}")
-        self.logger.debug(message)
+            # queue needs to be precreated or it will fail with ChannelClosed exception
+            # (404, "NOT_FOUND - no queue 'queue' in vhost '/'")
+            channel.queue_declare(queue=queue, passive=True)
+        else:
+            self.logger.info(f"Sending message to exchange {exchange}")
 
         channel.basic_publish(
             exchange=exchange, routing_key=routing_key, body=json.dumps(message))
@@ -141,8 +144,15 @@ class Executioner():
                            queue=temp_queue, routing_key=request_id)
         channel.close
 
-        self.broker.send_message(
-            message=execution_request, routing_key=flavour)
+        try:
+            self.broker.send_message(
+                message=execution_request, routing_key=flavour)
+        except ChannelClosed as e:
+            self.broker.logger.error(e)
+
+            error = f"No Serverless Runtimes found for the requested flavour {flavour}"
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=error)
 
         return request_id
 
