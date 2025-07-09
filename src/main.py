@@ -23,8 +23,6 @@ if conf.LOG_LEVEL == 'debug':  # uvicorn run log parameter is ignored
 auth.KEY_PATH = f'{conf.COGNIT_FRONTEND}/v1/public_key'
 auth.load_key()
 
-broker_client = cognit_broker.BrokerClient(endpoint=conf.BROKER, logger=logger)
-
 app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 
 
@@ -34,7 +32,7 @@ async def root():
 
 
 @app.post("/v1/functions/{id}/execute", status_code=status.HTTP_200_OK)
-async def execute_function(
+def execute_function(
     id: Annotated[int, Path(title="Document ID of the Function")],
     parameters: list[str],
     app_req_id: Annotated[int, Query(title="Document ID of the App Requirement")],
@@ -48,16 +46,11 @@ async def execute_function(
     one_client = opennebula.OpenNebulaClient(
         oned=conf.ONE_XMLRPC, oneflow=conf.ONEFLOW, username=credentials[0], password=credentials[1], logger=logger)
 
+    # Create a new BrokerClient per request for thread safety
+    broker_client = cognit_broker.BrokerClient(endpoint=conf.BROKER, logger=logger)
+
     executioner = cognit_broker.Executioner(
         broker_client=broker_client, one_client=one_client)
-
-    # result = with_timeout(
-    #     executioner.execute_function,
-    #     function_id=id,
-    #     app_req_id=app_req_id,
-    #     parameters=parameters,
-    #     mode=mode.value
-    # )
 
     # Let nginx handle the timeouts. 60 seconds is the default
     result = executioner.execute_function(function_id=id,
@@ -70,7 +63,7 @@ async def execute_function(
 
 # What to do with these metrics
 @app.post("/v1/device_metrics", status_code=status.HTTP_200_OK)
-async def upload_client_metrics(
+def upload_client_metrics(
     metrics: dict,
     token: Annotated[str | None, Header()] = None
 ):
@@ -119,4 +112,4 @@ def _timeout_handler(signum, frame):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host=conf.HOST, port=conf.PORT,
-                reload=False, log_level=conf.LOG_LEVEL)
+                reload=False, log_level=conf.LOG_LEVEL, workers=conf.WORKERS)
