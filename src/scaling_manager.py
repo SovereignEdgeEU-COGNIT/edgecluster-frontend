@@ -16,7 +16,7 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
     Returns:
         dict: Final service state information
     """
-    poll_interval = 1  # seconds
+    poll_interval = 2  # seconds
     # The timeout depends on the target cardinality, because we need to wait for all VMs to be ready
     timeout = 70 * (target_cardinality - current_cardinality)
     
@@ -167,12 +167,24 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
         logger.info(f"Terminating {len(idle_to_terminate)} idle VMs in parallel...")
         
         def stop_and_terminate_vm(vm):
-            """Stop consumer and immediately terminate VM"""
+            """Stop consumer, verify idle, then terminate VM"""
             try:
+                # Send stop-consuming request (non-blocking)
                 _stop_vm_consumer(vm['ip'], logger)
+                
+                # Poll briefly to ensure VM is actually idle
+                
+                while True:
+                    if not _is_vm_busy(vm['ip'], logger):
+                        # Confirmed idle, terminate now
+                        _terminate_vm(vm['id'], logger)
+                        logger.info(f"Successfully terminated idle VM {vm['id']}")
+                        return True
+                
+                logger.warning(f"Idle VM {vm['id']} still busy after {max_wait}s, terminating anyway")
                 _terminate_vm(vm['id'], logger)
-                logger.info(f"Successfully terminated idle VM {vm['id']}")
                 return True
+                
             except Exception as e:
                 logger.error(f"Error terminating idle VM {vm['id']}: {e}")
                 return False
@@ -329,7 +341,7 @@ def _is_vm_busy(vm_ip: str, logger: logging.Logger) -> bool:
 
 
 def _stop_vm_consumer(vm_ip: str, logger: logging.Logger) -> None:
-    """Stop RabbitMQ consumer on a VM
+    """Stop RabbitMQ consumer on a VM (non-blocking, just triggers the stop)
     
     Args:
         vm_ip: VM IP address
@@ -338,17 +350,22 @@ def _stop_vm_consumer(vm_ip: str, logger: logging.Logger) -> None:
     import requests
     
     try:
+        # To trigger the stop
         response = requests.post(
-            f"http://{vm_ip}:8000/control/stop-consuming"
+            f"http://{vm_ip}:8000/control/stop-consuming",
+            timeout=3 
         )
         
         if response.status_code == 200:
-            logger.info(f"Successfully stopped consumer on VM {vm_ip}")
+            logger.info(f"Successfully sent stop-consuming request to VM {vm_ip}")
         else:
-            logger.warning(f"Failed to stop consumer on VM {vm_ip}: {response.status_code}")
+            logger.warning(f"Stop-consuming returned {response.status_code} for VM {vm_ip}")
             
+    except requests.exceptions.Timeout:
+        # Timeout is OK - the endpoint received our request but is waiting for function to finish
+        logger.info(f"Stop-consuming request sent to VM {vm_ip} (endpoint still processing)")
     except Exception as e:
-        logger.error(f"Error stopping consumer on VM {vm_ip}: {e}")
+        logger.warning(f"Error stopping consumer on VM {vm_ip}: {e} (will poll vm_is_executing)")
 
 
 def _terminate_vm(vm_id: int, logger: logging.Logger) -> None:
@@ -367,12 +384,18 @@ def _terminate_vm(vm_id: int, logger: logging.Logger) -> None:
             ['onegate', 'vm', 'terminate', str(vm_id), '--hard'],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            timeout=30  # 30 second timeout for terminate command
         )
         
         logger.info(f"Successfully terminated VM {vm_id}")
         logger.debug(result.stdout)
         
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Timeout terminating VM {vm_id}: command took longer than 30s")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Timeout terminating VM {vm_id}")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to terminate VM {vm_id}: {e.stderr}")
         raise HTTPException(
