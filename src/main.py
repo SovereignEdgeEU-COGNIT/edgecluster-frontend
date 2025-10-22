@@ -74,7 +74,7 @@ def upload_client_metrics(
 
 @app.post("/v1/scale", status_code=status.HTTP_200_OK)
 def scale_service(
-    cardinality: Annotated[int, Query(title="Desired cardinality for FAAS role")]
+    target_cardinality: Annotated[int, Query(title="Desired cardinality for FAAS role")]
 ) -> dict:
     """Scale the oneflow service to the specified cardinality
     
@@ -82,7 +82,7 @@ def scale_service(
     No authentication needed - uses onegate commands with VM context token.
     
     Args:
-        cardinality: Target number of VMs for the FAAS role
+        target_cardinality: Target number of VMs for the FAAS role
         
     Returns:
         dict: Service information after scaling operation
@@ -107,17 +107,20 @@ def scale_service(
             break
     
     logger.info(f"Service ID: {service_id}, State: {current_state}")
-    logger.info(f"Current cardinality: {current_cardinality}, Target: {cardinality}")
+    logger.info(f"Current cardinality: {current_cardinality}, Target: {target_cardinality}")
     
     # Determine scaling direction
-    if cardinality > current_cardinality:
-        logger.info(f"Scaling UP from {current_cardinality} to {cardinality}")
-        final_service_info = scaling_manager.scale_up(one_client, cardinality, logger)
-    elif cardinality < current_cardinality:
-        logger.info(f"Scaling DOWN from {current_cardinality} to {cardinality}")
-        final_service_info = scaling_manager.scale_down(one_client, cardinality, logger)
+    if target_cardinality > current_cardinality:
+        logger.info(f"Scaling UP from {current_cardinality} to {target_cardinality}")
+        final_service_info = scaling_manager.scale_up(one_client, current_cardinality, target_cardinality, logger)
+    elif target_cardinality == 0:
+        logger.info(f"You cannot scale down to 0 VMs. Scaling down to 1 VM")
+        final_service_info = scaling_manager.scale_down(one_client, 1, logger)
+    elif target_cardinality < current_cardinality:
+        logger.info(f"Scaling DOWN from {current_cardinality} to {target_cardinality}")
+        final_service_info = scaling_manager.scale_down(one_client, target_cardinality, logger)
     else:
-        logger.info(f"Already at target cardinality {cardinality}, no scaling needed")
+        logger.info(f"Already at target cardinality {target_cardinality}, no scaling needed")
         final_service_info = service_info
     
     # Extract final state for response
@@ -132,7 +135,6 @@ def scale_service(
         "state": int(final_service_info.get('state', -1)),
         "initial_cardinality": current_cardinality,
         "final_cardinality": final_cardinality,
-        "target_cardinality": cardinality,
         "message": "Scaling operation completed successfully"
     }
 

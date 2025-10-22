@@ -5,7 +5,7 @@ import logging
 from fastapi import HTTPException, status
 import opennebula
 
-def scale_up(one_client: opennebula.OpenNebulaClient, target_cardinality: int, logger: logging.Logger) -> dict:
+def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, target_cardinality: int, logger: logging.Logger) -> dict:
     """Scale up the service to target cardinality with polling until complete
     
     Args:
@@ -17,7 +17,8 @@ def scale_up(one_client: opennebula.OpenNebulaClient, target_cardinality: int, l
         dict: Final service state information
     """
     poll_interval = 1  # seconds
-    timeout = 60  # 60 seconds - wait for service to become RUNNING and scaling to complete
+    # The timeout depends on the target cardinality, because we need to wait for all VMs to be ready
+    timeout = 60 * (target_cardinality - current_cardinality)
     
     logger.info(f"Starting scale up to cardinality {target_cardinality}")
     
@@ -133,10 +134,6 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
     current_cardinality = len(faas_vms)
     vms_to_remove = current_cardinality - target_cardinality
     
-    if vms_to_remove <= 0:
-        logger.info("Already at or below target cardinality")
-        return service_info
-    
     logger.info(f"Need to remove {vms_to_remove} VMs")
     
     # Classify VMs and terminate idle ones immediately
@@ -146,7 +143,7 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
     for vm_node in faas_vms:
         vm_id = vm_node.get('deploy_id')
         vm_ip = _get_vm_ip(vm_node, logger)
-        
+        logger.debug(f"vm_id: {vm_id}, vm_ip: {vm_ip}")
         if not vm_ip:
             logger.warning(f"Could not get IP for VM {vm_id}, skipping")
             continue
@@ -155,7 +152,7 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
         
         if is_busy:
             busy_vms.append({'id': vm_id, 'ip': vm_ip})
-            logger.debug(f"VM {vm_id} is BUSY")
+            logger.info(f"VM {vm_id} is BUSY")
         else:
             # Idle VM: unbind and terminate immediately
             if terminated_count < vms_to_remove:
@@ -239,7 +236,6 @@ def _get_vm_ip(vm_node: dict, logger: logging.Logger) -> str:
             ip6 = nic[0].get('IP6')
         else:
             ip6 = nic.get('IP6')
-        
         return ip6
         
     except Exception as e:
@@ -271,7 +267,7 @@ def _is_vm_busy(vm_ip: str, logger: logging.Logger) -> bool:
                 parts = line.split()
                 if len(parts) >= 2:
                     value = float(parts[-1])
-                    logger.debug(f"vm_is_executing for {vm_ip}: {value}")
+                    logger.debug(f"prometheus: vm_is_executing for {vm_ip}: {value}")
                     return value > 0
         
         # Metric not found, assume idle
