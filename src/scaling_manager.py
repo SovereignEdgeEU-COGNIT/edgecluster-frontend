@@ -18,7 +18,7 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
     """
     poll_interval = 1  # seconds
     # The timeout depends on the target cardinality, because we need to wait for all VMs to be ready
-    timeout = 60 * (target_cardinality - current_cardinality) + 10
+    timeout = 70 * (target_cardinality - current_cardinality)
     
     logger.info(f"Starting scale up to cardinality {target_cardinality}")
     
@@ -134,9 +134,9 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
     
     logger.info(f"Need to remove {vms_to_remove} VMs")
     
-    # Classify VMs and terminate idle ones immediately
+    # Phase 1: Classify VMs into busy and idle
     busy_vms = []
-    terminated_idle_count = 0
+    idle_vms = []
     
     for vm_node in faas_vms:
         vm_id = vm_node.get('deploy_id')
@@ -154,55 +154,102 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
             busy_vms.append({'id': vm_id, 'ip': vm_ip})
             logger.info(f"VM {vm_id} is BUSY")
         else:
-            # Idle VM: unbind and terminate immediately
-            if terminated_idle_count < vms_to_remove:
-                logger.info(f"VM {vm_id} is IDLE, unbinding and terminating immediately")
-                _stop_vm_consumer(vm_ip, logger)
-                _terminate_vm(vm_id, logger)
-                terminated_idle_count += 1
+            idle_vms.append({'id': vm_id, 'ip': vm_ip})
+            logger.info(f"VM {vm_id} is IDLE")
+    
+    # Phase 1.5: Async terminate idle VMs (up to vms_to_remove)
+    terminated_idle_count = 0
+    if idle_vms and vms_to_remove > 0:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Select idle VMs to terminate (up to the number we need to remove)
+        idle_to_terminate = idle_vms[:vms_to_remove]
+        logger.info(f"Terminating {len(idle_to_terminate)} idle VMs in parallel...")
+        
+        def stop_and_terminate_vm(vm):
+            """Stop consumer and immediately terminate VM"""
+            try:
+                _stop_vm_consumer(vm['ip'], logger)
+                _terminate_vm(vm['id'], logger)
+                logger.info(f"Successfully terminated idle VM {vm['id']}")
+                return True
+            except Exception as e:
+                logger.error(f"Error terminating idle VM {vm['id']}: {e}")
+                return False
+        
+        # Async stop+terminate each VM as soon as its stop-consuming finishes
+        with ThreadPoolExecutor(max_workers=len(idle_to_terminate)) as executor:
+            futures = {
+                executor.submit(stop_and_terminate_vm, vm): vm 
+                for vm in idle_to_terminate
+            }
+            for future in as_completed(futures):
+                vm = futures[future]
+                try:
+                    if future.result():
+                        terminated_idle_count += 1
+                except Exception as e:
+                    logger.error(f"Unexpected error for VM {vm['id']}: {e}")
+        
+        logger.info(f"Successfully terminated {terminated_idle_count} idle VMs")
     
     vms_to_remove -= terminated_idle_count
+    terminated_count = terminated_idle_count  # Track total terminated VMs
 
     # Phase 2: If more removals needed, unbind busy VMs and wait for them to finish
     if vms_to_remove > 0:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
         logger.info(f"Need to remove {vms_to_remove} more VMs from busy ones")
         
         vms_to_unbind = busy_vms[:vms_to_remove]
+        logger.info(f"Stopping consumers and waiting for {len(vms_to_unbind)} busy VMs to finish in parallel...")
         
-        # Stop consuming on busy VMs
-        for vm in vms_to_unbind:
-            logger.info(f"VM {vm['id']} is busy, stopping consumer")
-            _stop_vm_consumer(vm['ip'], logger)
-        
-        # Poll until VMs finish their executions, then terminate them
-        logger.info("Waiting for busy VMs to finish executions...")
-        start_time = time.time()
-        waiting_for_idle = list(vms_to_unbind)
-        
-        while waiting_for_idle and (time.time() - start_time) < operation_timeout:
-            for vm in waiting_for_idle[:]:  # Copy list for safe removal
-                is_busy = _is_vm_busy(vm['ip'], logger)
+        def stop_wait_and_terminate_busy_vm(vm):
+            """Stop consumer, wait for execution to finish, then terminate VM"""
+            try:
+                # Step 1: Stop consumer
+                _stop_vm_consumer(vm['ip'], logger)
+                logger.info(f"VM {vm['id']} consumer stopped, waiting for execution to finish...")
                 
-                if not is_busy:
-                    logger.info(f"VM {vm['id']} finished execution, terminating now")
-                    _terminate_vm(vm['id'], logger)
-                    terminated_count += 1
-                    waiting_for_idle.remove(vm)
-            
-            if waiting_for_idle:
-                logger.debug(f"{len(waiting_for_idle)} VMs still executing, waiting {poll_interval}s...")
-                time.sleep(poll_interval)
-        
-        # Handle timeout - force terminate remaining VMs
-        if waiting_for_idle:
-            logger.warning(f"{len(waiting_for_idle)} VMs did not finish within timeout, force terminating")
-            for vm in waiting_for_idle:
-                logger.warning(f"Force terminating VM {vm['id']}")
+                # Step 2: Poll until VM becomes idle
+                start_time = time.time()
+                while (time.time() - start_time) < operation_timeout:
+                    is_busy = _is_vm_busy(vm['ip'], logger)
+                    
+                    if not is_busy:
+                        # Step 3: Terminate immediately when idle
+                        logger.info(f"VM {vm['id']} finished execution, terminating now")
+                        _terminate_vm(vm['id'], logger)
+                        return True
+                    
+                    time.sleep(poll_interval)
+                
+                # Timeout: force terminate
+                logger.warning(f"VM {vm['id']} did not finish within timeout, force terminating")
                 _terminate_vm(vm['id'], logger)
-                terminated_count += 1
+                return True
+                
+            except Exception as e:
+                logger.error(f"Error processing busy VM {vm['id']}: {e}")
+                return False
+        
+        # Process each busy VM independently in parallel
+        with ThreadPoolExecutor(max_workers=len(vms_to_unbind)) as executor:
+            futures = {
+                executor.submit(stop_wait_and_terminate_busy_vm, vm): vm 
+                for vm in vms_to_unbind
+            }
+            for future in as_completed(futures):
+                vm = futures[future]
+                try:
+                    if future.result():
+                        terminated_count += 1
+                except Exception as e:
+                    logger.error(f"Unexpected error for busy VM {vm['id']}: {e}")
     
     # Verify final state
-    logger.info(f"Scale down complete. Final cardinality: {target_cardinality}")
+    logger.info(f"Scale down complete! Terminated {terminated_count} VMs, target cardinality: {target_cardinality}")
     service_info = one_client.get_service_info_onegate()
     
     return service_info
