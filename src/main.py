@@ -12,6 +12,7 @@ import biscuit_token as auth
 from cognit_models import ExecutionMode
 import cognit_broker
 import opennebula
+import scaling_manager
 
 TIMEOUT = 30
 
@@ -93,13 +94,12 @@ def scale_service(
         password="dummy",  # Not used for onegate commands
         logger=logger)
     
-    # Get current service info via onegate (no auth needed)
     service_info = one_client.get_service_info_onegate()
     
     service_id = service_info['id']
-    current_state = service_info.get('state', 'UNKNOWN')
+    current_state = int(service_info.get('state', -1))
     
-    # Find FAAS role cardinality
+    # Find current FAAS role cardinality
     current_cardinality = 0
     for role in service_info.get('roles', []):
         if role.get('name') == 'FaaS':
@@ -107,15 +107,33 @@ def scale_service(
             break
     
     logger.info(f"Service ID: {service_id}, State: {current_state}")
-    logger.info(f"Current cardinality: {current_cardinality}, Requested: {cardinality}")
+    logger.info(f"Current cardinality: {current_cardinality}, Target: {cardinality}")
     
-    # For now, just return current service info (skeleton implementation)
+    # Determine scaling direction
+    if cardinality > current_cardinality:
+        logger.info(f"Scaling UP from {current_cardinality} to {cardinality}")
+        final_service_info = scaling_manager.scale_up(one_client, cardinality, logger)
+    elif cardinality < current_cardinality:
+        logger.info(f"Scaling DOWN from {current_cardinality} to {cardinality}")
+        final_service_info = scaling_manager.scale_down(one_client, cardinality, logger)
+    else:
+        logger.info(f"Already at target cardinality {cardinality}, no scaling needed")
+        final_service_info = service_info
+    
+    # Extract final state for response
+    final_cardinality = 0
+    for role in final_service_info.get('roles', []):
+        if role.get('name') == 'FaaS':
+            final_cardinality = role.get('cardinality', 0)
+            break
+    
     return {
-        "service_id": service_id,
-        "state": current_state,
-        "current_cardinality": current_cardinality,
+        "service_id": final_service_info['id'],
+        "state": int(final_service_info.get('state', -1)),
+        "initial_cardinality": current_cardinality,
+        "final_cardinality": final_cardinality,
         "target_cardinality": cardinality,
-        "message": "Skeleton implementation - scaling logic to be added"
+        "message": "Scaling operation completed successfully"
     }
 
 
