@@ -71,6 +71,45 @@ def upload_client_metrics(
     authorize(token)
 
 
+@app.post("/v1/scale", status_code=status.HTTP_200_OK)
+def scale_service(
+    cardinality: Annotated[int, Query(title="Desired cardinality for FAAS role")]
+) -> dict:
+    """Scale the oneflow service to the specified cardinality
+    
+    Args:
+        cardinality: Target number of VMs for the FAAS role
+        
+    Returns:
+        dict: Service information after scaling operation
+    """
+    # Get OpenNebula credentials from system
+    credentials = opennebula.get_one_auth()
+    
+    # Create OpenNebula client
+    one_client = opennebula.OpenNebulaClient(
+        oned=conf.ONE_XMLRPC, 
+        oneflow=conf.ONEFLOW, 
+        username=credentials[0], 
+        password=credentials[1], 
+        logger=logger)
+    
+    # Get current service info
+    service_info = one_client.get_service_info(conf.SERVICE_ID)
+    
+    logger.info(f"Current service state: {service_info.get('state')}")
+    logger.info(f"Requested cardinality: {cardinality}")
+    
+    # For now, just return current service info (skeleton implementation)
+    return {
+        "service_id": conf.SERVICE_ID,
+        "state": service_info.get("state"),
+        "current_cardinality": service_info.get("roles", [{}])[0].get("cardinality", 0),
+        "target_cardinality": cardinality,
+        "message": "Skeleton implementation - scaling logic to be added"
+    }
+
+
 def authorize(token) -> list[str]:
     if token is None:
         message = 'Missing token in header'

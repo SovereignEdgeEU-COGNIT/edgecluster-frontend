@@ -103,6 +103,70 @@ class OpenNebulaClient(object):
     def cluster_vms(self, cluster_id: int) -> list[pyone.bindings.VMSub]:
         return self.one.vmpool.infoextended(-2, -1, -1, 3, f'CID={cluster_id}').VM
 
+    def get_service_info(self, service_id: int) -> dict:
+        """Get oneflow service information including state and cardinality
+        
+        Args:
+            service_id (int): The oneflow service ID
+            
+        Returns:
+            dict: Service information with state, cardinality, roles, etc.
+        """
+        uri = f"{self.oneflow_session['endpoint']}/service/{service_id}"
+        
+        self.logger.info(f"Getting oneflow service {service_id} information")
+        response = requests.get(uri, auth=HTTPBasicAuth(
+            self.oneflow_session['user'], self.oneflow_session['pass']))
+        
+        if response.status_code != 200:
+            self.logger.error(response.json())
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"Could not read service {service_id}")
+        
+        service = response.json()["DOCUMENT"]["TEMPLATE"]["BODY"]
+        self.logger.debug(service)
+        
+        return service
+
+    def set_service_cardinality(self, service_id: int, cardinality: int) -> dict:
+        """Set the cardinality of the FAAS role in a oneflow service
+        
+        Args:
+            service_id (int): The oneflow service ID
+            cardinality (int): Target cardinality for the FAAS role
+            
+        Returns:
+            dict: Response from oneflow API
+        """
+        uri = f"{self.oneflow_session['endpoint']}/service/{service_id}/role/FAAS"
+        
+        payload = {
+            "cardinality": cardinality,
+            "force": False
+        }
+        
+        self.logger.info(f"Setting service {service_id} FAAS role cardinality to {cardinality}")
+        self.logger.debug(payload)
+        
+        response = requests.put(
+            uri, 
+            json=payload,
+            auth=HTTPBasicAuth(
+                self.oneflow_session['user'], 
+                self.oneflow_session['pass']))
+        
+        if response.status_code != 200:
+            self.logger.error(response.json())
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"Could not set cardinality for service {service_id}")
+        
+        result = response.json()
+        self.logger.debug(result)
+        
+        return result
+
 
 def _validate_xmlrpc_call(xmlrpc_call):
     try:

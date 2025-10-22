@@ -14,7 +14,8 @@ DEFAULT = {
     'cluster_id': 0,
     'broker': 'http://localhost:5672',
     'workers': 1,
-    'log_level': 'info'
+    'log_level': 'info',
+    'service_id': 0
 }
 
 FALLBACK_MSG = 'Using default configuration'
@@ -42,6 +43,7 @@ COGNIT_FRONTEND = config['cognit_frontend']
 CLUSTER_ID = config['cluster_id']
 BROKER = config['broker']
 WORKERS = config['workers']
+SERVICE_ID = config['service_id']
 
 for endpoint in [ONE_XMLRPC, ONEFLOW]:
     one = urlparse(endpoint)
