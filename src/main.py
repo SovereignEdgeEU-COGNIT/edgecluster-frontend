@@ -77,34 +77,43 @@ def scale_service(
 ) -> dict:
     """Scale the oneflow service to the specified cardinality
     
+    This endpoint scales the oneflow service this VM belongs to.
+    No authentication needed - uses onegate commands with VM context token.
+    
     Args:
         cardinality: Target number of VMs for the FAAS role
         
     Returns:
         dict: Service information after scaling operation
     """
-    # Get OpenNebula credentials from system
-    credentials = opennebula.get_one_auth()
-    
-    # Create OpenNebula client
     one_client = opennebula.OpenNebulaClient(
         oned=conf.ONE_XMLRPC, 
         oneflow=conf.ONEFLOW, 
-        username=credentials[0], 
-        password=credentials[1], 
+        username="dummy",  # Not used for onegate commands
+        password="dummy",  # Not used for onegate commands
         logger=logger)
     
-    # Get current service info
-    service_info = one_client.get_service_info(conf.SERVICE_ID)
+    # Get current service info via onegate (no auth needed)
+    service_info = one_client.get_service_info_onegate()
     
-    logger.info(f"Current service state: {service_info.get('state')}")
-    logger.info(f"Requested cardinality: {cardinality}")
+    service_id = service_info['id']
+    current_state = service_info.get('state', 'UNKNOWN')
+    
+    # Find FAAS role cardinality
+    current_cardinality = 0
+    for role in service_info.get('roles', []):
+        if role.get('name') == 'FaaS':
+            current_cardinality = role.get('cardinality', 0)
+            break
+    
+    logger.info(f"Service ID: {service_id}, State: {current_state}")
+    logger.info(f"Current cardinality: {current_cardinality}, Requested: {cardinality}")
     
     # For now, just return current service info (skeleton implementation)
     return {
-        "service_id": conf.SERVICE_ID,
-        "state": service_info.get("state"),
-        "current_cardinality": service_info.get("roles", [{}])[0].get("cardinality", 0),
+        "service_id": service_id,
+        "state": current_state,
+        "current_cardinality": current_cardinality,
         "target_cardinality": cardinality,
         "message": "Skeleton implementation - scaling logic to be added"
     }
