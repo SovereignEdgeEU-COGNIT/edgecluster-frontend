@@ -18,7 +18,7 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
     """
     poll_interval = 1  # seconds
     # The timeout depends on the target cardinality, because we need to wait for all VMs to be ready
-    timeout = 60 * (target_cardinality - current_cardinality)
+    timeout = 60 * (target_cardinality - current_cardinality) + 10
     
     logger.info(f"Starting scale up to cardinality {target_cardinality}")
     
@@ -70,9 +70,7 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
             if role.get('name') == 'FaaS':
                 current_cardinality = role.get('cardinality')
                 break
-        
-        logger.debug(f"Cardinality: {current_cardinality}/{target_cardinality}")
-        
+                
         # Success: RUNNING state and target cardinality reached
         if (current_state == 2 or current_state == 10) and current_cardinality == target_cardinality:
             logger.info(f"Scaling complete! Cardinality: {current_cardinality}")
@@ -93,7 +91,7 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
                 detail=f"Scaling failed. Service is not in RUNNING state. Current state: {current_state}"
             )
         
-        logger.info(f"State: {current_state}, Cardinality: {current_cardinality}/{target_cardinality}, waiting {poll_interval}s...")
+        logger.info(f"State: {current_state}, Polling every {poll_interval}s, Timeout: {timeout}s")
         time.sleep(poll_interval)
 
 
@@ -138,14 +136,16 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
     
     # Classify VMs and terminate idle ones immediately
     busy_vms = []
-    terminated_count = 0
+    terminated_idle_count = 0
     
     for vm_node in faas_vms:
         vm_id = vm_node.get('deploy_id')
         vm_ip = _get_vm_ip(vm_node, logger)
         logger.debug(f"vm_id: {vm_id}, vm_ip: {vm_ip}")
+
         if not vm_ip:
-            logger.warning(f"Could not get IP for VM {vm_id}, skipping")
+            logger.warning(f"Could not get IP for VM {vm_id}, terminating without graceful shutdown")
+            _terminate_vm(vm_id, logger)
             continue
         
         is_busy = _is_vm_busy(vm_ip, logger)
@@ -155,13 +155,14 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
             logger.info(f"VM {vm_id} is BUSY")
         else:
             # Idle VM: unbind and terminate immediately
-            if terminated_count < vms_to_remove:
+            if terminated_idle_count < vms_to_remove:
                 logger.info(f"VM {vm_id} is IDLE, unbinding and terminating immediately")
                 _stop_vm_consumer(vm_ip, logger)
                 _terminate_vm(vm_id, logger)
-                terminated_count += 1
-                vms_to_remove -= 1
+                terminated_idle_count += 1
     
+    vms_to_remove -= terminated_idle_count
+
     # Phase 2: If more removals needed, unbind busy VMs and wait for them to finish
     if vms_to_remove > 0:
         logger.info(f"Need to remove {vms_to_remove} more VMs from busy ones")
@@ -201,7 +202,7 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
                 terminated_count += 1
     
     # Verify final state
-    logger.info(f"Scale down complete! Terminated {terminated_count} VMs")
+    logger.info(f"Scale down complete. Final cardinality: {target_cardinality}")
     service_info = one_client.get_service_info_onegate()
     
     return service_info
