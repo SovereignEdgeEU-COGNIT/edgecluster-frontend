@@ -115,7 +115,7 @@ class OpenNebulaClient(object):
         
         try:
             result = subprocess.run(
-                ['onegate', 'service', 'show', '--json'],
+                ['onegate', 'service', 'show', '--json', '--extended'],
                 capture_output=True,
                 text=True,
                 check=True
