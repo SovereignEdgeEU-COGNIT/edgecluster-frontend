@@ -26,6 +26,9 @@ auth.load_key()
 
 app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 
+# Global flag to prevent concurrent scaling operations
+_scaling_in_progress = False
+
 
 @app.get("/")
 async def root():
@@ -87,56 +90,72 @@ def scale_service(
     Returns:
         dict: Service information after scaling operation
     """
-    one_client = opennebula.OpenNebulaClient(
-        oned=conf.ONE_XMLRPC, 
-        oneflow=conf.ONEFLOW, 
-        username="dummy",  # Not used for onegate commands
-        password="dummy",  # Not used for onegate commands
-        logger=logger)
+    global _scaling_in_progress
     
-    service_info = one_client.get_service_info_onegate()
+    # Check if scaling is already in progress
+    if _scaling_in_progress:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Scaling operation already in progress"
+        )
     
-    service_id = service_info['id']
-    current_state = int(service_info.get('state', -1))
+    # Set flag before starting
+    _scaling_in_progress = True
     
-    # Find current FAAS role cardinality
-    current_cardinality = 0
-    for role in service_info.get('roles', []):
-        if role.get('name') == 'FaaS':
-            current_cardinality = role.get('cardinality', 0)
-            break
+    try:
+        one_client = opennebula.OpenNebulaClient(
+            oned=conf.ONE_XMLRPC, 
+            oneflow=conf.ONEFLOW, 
+            username="dummy",  # Not used for onegate commands
+            password="dummy",  # Not used for onegate commands
+            logger=logger)
     
-    logger.info(f"Service ID: {service_id}, State: {current_state}")
-    logger.info(f"Current cardinality: {current_cardinality}, Target: {target_cardinality}")
-    
-    # Determine scaling direction
-    if target_cardinality > current_cardinality:
-        logger.info(f"Scaling UP from {current_cardinality} to {target_cardinality}")
-        final_service_info = scaling_manager.scale_up(one_client, current_cardinality, target_cardinality, logger)
-    elif target_cardinality == 0:
-        logger.info(f"You cannot scale down to 0 VMs. Scaling down to 1 VM")
-        final_service_info = scaling_manager.scale_down(one_client, 1, logger)
-    elif target_cardinality < current_cardinality:
-        logger.info(f"Scaling DOWN from {current_cardinality} to {target_cardinality}")
-        final_service_info = scaling_manager.scale_down(one_client, target_cardinality, logger)
-    else:
-        logger.info(f"Already at target cardinality {target_cardinality}, no scaling needed")
-        final_service_info = service_info
-    
-    # Extract final state for response
-    final_cardinality = 0
-    for role in final_service_info.get('roles', []):
-        if role.get('name') == 'FaaS':
-            final_cardinality = role.get('cardinality', 0)
-            break
-    
-    return {
-        "service_id": final_service_info['id'],
-        "state": int(final_service_info.get('state', -1)),
-        "initial_cardinality": current_cardinality,
-        "final_cardinality": final_cardinality,
-        "message": "Scaling operation completed successfully"
-    }
+        service_info = one_client.get_service_info_onegate()
+        
+        service_id = service_info['id']
+        current_state = int(service_info.get('state', -1))
+        
+        # Find current FAAS role cardinality
+        current_cardinality = 0
+        for role in service_info.get('roles', []):
+            if role.get('name') == 'FaaS':
+                current_cardinality = role.get('cardinality', 0)
+                break
+        
+        logger.info(f"Service ID: {service_id}, State: {current_state}")
+        logger.info(f"Current cardinality: {current_cardinality}, Target: {target_cardinality}")
+        
+        # Determine scaling direction
+        if target_cardinality > current_cardinality:
+            logger.info(f"Scaling UP from {current_cardinality} to {target_cardinality}")
+            final_service_info = scaling_manager.scale_up(one_client, current_cardinality, target_cardinality, logger)
+        elif target_cardinality == 0:
+            logger.info(f"You cannot scale down to 0 VMs. Scaling down to 1 VM")
+            final_service_info = scaling_manager.scale_down(one_client, 1, logger)
+        elif target_cardinality < current_cardinality:
+            logger.info(f"Scaling DOWN from {current_cardinality} to {target_cardinality}")
+            final_service_info = scaling_manager.scale_down(one_client, target_cardinality, logger)
+        else:
+            logger.info(f"Already at target cardinality {target_cardinality}, no scaling needed")
+            final_service_info = service_info
+        
+        # Extract final state for response
+        final_cardinality = 0
+        for role in final_service_info.get('roles', []):
+            if role.get('name') == 'FaaS':
+                final_cardinality = role.get('cardinality', 0)
+                break
+        
+        return {
+            "service_id": final_service_info['id'],
+            "state": int(final_service_info.get('state', -1)),
+            "initial_cardinality": current_cardinality,
+            "final_cardinality": final_cardinality,
+            "message": "Scaling operation completed successfully"
+        }
+    finally:
+        # Always reset flag when done (success or failure)
+        _scaling_in_progress = False
 
 
 def authorize(token) -> list[str]:
