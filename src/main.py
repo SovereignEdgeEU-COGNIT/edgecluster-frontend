@@ -30,6 +30,19 @@ app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
 _scaling_in_progress = False
 
 
+# JSend response helpers
+def success_response(data: dict, message: str = "Operation completed successfully"):
+    return {"status": "success", "data": data, "message": message}
+
+def error_response(message: str, code: str = None, data: dict = None):
+    response = {"status": "fail", "message": message}
+    if code:
+        response["code"] = code
+    if data:
+        response["data"] = data
+    return response
+
+
 @app.get("/")
 async def root():
     return RedirectResponse(url="/docs")
@@ -75,7 +88,7 @@ def upload_client_metrics(
     authorize(token)
 
 
-@app.post("/v1/scale", status_code=status.HTTP_200_OK)
+@app.post("/v1/scale")
 def scale_service(
     target_cardinality: Annotated[int, Query(title="Desired cardinality for FAAS role")]
 ) -> dict:
@@ -88,15 +101,15 @@ def scale_service(
         target_cardinality: Target number of VMs for the FAAS role
         
     Returns:
-        dict: Service information after scaling operation
+        dict: JSend formatted response
     """
     global _scaling_in_progress
     
     # Check if scaling is already in progress
     if _scaling_in_progress:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Scaling operation already in progress"
+        return error_response(
+            message="Scaling operation already in progress",
+            code="SCALING_IN_PROGRESS"
         )
     
     # Set flag before starting
@@ -139,20 +152,35 @@ def scale_service(
             logger.info(f"Already at target cardinality {target_cardinality}, no scaling needed")
             final_service_info = service_info
         
-        # Extract final state for response
-        final_cardinality = 0
-        for role in final_service_info.get('roles', []):
-            if role.get('name') == 'FaaS':
-                final_cardinality = role.get('cardinality', 0)
-                break
         
-        return {
-            "service_id": final_service_info['id'],
-            "state": int(final_service_info.get('state', -1)),
-            "initial_cardinality": current_cardinality,
-            "final_cardinality": final_cardinality,
-            "message": "Scaling operation completed successfully"
+        return success_response(
+            data={
+                "service_id": final_service_info['id']
+            },
+            message="Scaling operation completed successfully"
+        )
+    
+    except HTTPException as e:
+        # Handle HTTPExceptions raised by scaling_manager
+        error_code_map = {
+            503: "SERVICE_UNAVAILABLE",
+            504: "TIMEOUT",
+            500: "INTERNAL_ERROR"
         }
+        return error_response(
+            message=e.detail,
+            code=error_code_map.get(e.status_code, "ERROR"),
+            data={"status_code": e.status_code}
+        )
+    
+    except Exception as e:
+        # Unexpected errors
+        logger.error(f"Unexpected error during scaling: {e}")
+        return error_response(
+            message=f"Unexpected error: {str(e)}",
+            code="UNEXPECTED_ERROR"
+        )
+    
     finally:
         # Always reset flag when done (success or failure)
         _scaling_in_progress = False

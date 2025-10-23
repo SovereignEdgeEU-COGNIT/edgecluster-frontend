@@ -138,7 +138,6 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
     import requests
     
     poll_interval = 5  # seconds
-    operation_timeout = 600  # 10 minutes
     
     logger.info(f"Starting scale down to cardinality {target_cardinality}")
     
