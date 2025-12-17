@@ -12,6 +12,7 @@ import biscuit_token as auth
 from cognit_models import ExecutionMode
 import cognit_broker
 import opennebula
+import scaling_manager
 
 TIMEOUT = 30
 
@@ -24,6 +25,22 @@ auth.KEY_PATH = f'{conf.COGNIT_FRONTEND}/v1/public_key'
 auth.load_key()
 
 app = FastAPI(title='Edge Cluster Frontend', version='0.1.0')
+
+# Global flag to prevent concurrent scaling operations
+_scaling_in_progress = False
+
+
+# JSend response helpers
+def success_response(data: dict, message: str = "Operation completed successfully"):
+    return {"status": "success", "data": data, "message": message}
+
+def error_response(message: str, code: str = None, data: dict = None):
+    response = {"status": "fail", "message": message}
+    if code:
+        response["code"] = code
+    if data:
+        response["data"] = data
+    return response
 
 
 @app.get("/")
@@ -69,6 +86,104 @@ def upload_client_metrics(
 ):
 
     authorize(token)
+
+
+@app.post("/v1/scale")
+def scale_service(
+    target_cardinality: Annotated[int, Query(title="Desired cardinality for FAAS role")]
+) -> dict:
+    """Scale the oneflow service to the specified cardinality
+    
+    This endpoint scales the oneflow service this VM belongs to.
+    No authentication needed - uses onegate commands with VM context token.
+    
+    Args:
+        target_cardinality: Target number of VMs for the FAAS role
+        
+    Returns:
+        dict: JSend formatted response
+    """
+    global _scaling_in_progress
+    
+    # Check if scaling is already in progress
+    if _scaling_in_progress:
+        return error_response(
+            message="Scaling operation already in progress",
+            code="SCALING_IN_PROGRESS"
+        )
+    
+    # Set flag before starting
+    _scaling_in_progress = True
+    
+    try:
+        one_client = opennebula.OpenNebulaClient(
+            oned=conf.ONE_XMLRPC, 
+            oneflow=conf.ONEFLOW, 
+            username="dummy",  # Not used for onegate commands
+            password="dummy",  # Not used for onegate commands
+            logger=logger)
+    
+        service_info = one_client.get_service_info_onegate()
+        
+        service_id = service_info['id']
+        current_state = int(service_info.get('state', -1))
+        
+        # Find current FAAS role cardinality
+        current_cardinality = 0
+        for role in service_info.get('roles', []):
+            if role.get('name') == 'FaaS':
+                current_cardinality = role.get('cardinality', 0)
+                break
+        
+        logger.info(f"Service ID: {service_id}, State: {current_state}")
+        logger.info(f"Current cardinality: {current_cardinality}, Target: {target_cardinality}")
+        
+        # Determine scaling direction
+        if target_cardinality > current_cardinality:
+            logger.info(f"Scaling UP from {current_cardinality} to {target_cardinality}")
+            final_service_info = scaling_manager.scale_up(one_client, current_cardinality, target_cardinality, logger)
+        elif target_cardinality == 0:
+            logger.info(f"You cannot scale down to 0 VMs. Scaling down to 1 VM")
+            final_service_info = scaling_manager.scale_down(one_client, 1, logger)
+        elif target_cardinality < current_cardinality:
+            logger.info(f"Scaling DOWN from {current_cardinality} to {target_cardinality}")
+            final_service_info = scaling_manager.scale_down(one_client, target_cardinality, logger)
+        else:
+            logger.info(f"Already at target cardinality {target_cardinality}, no scaling needed")
+            final_service_info = service_info
+        
+        
+        return success_response(
+            data={
+                "service_id": final_service_info['id']
+            },
+            message="Scaling operation completed successfully"
+        )
+    
+    except HTTPException as e:
+        # Handle HTTPExceptions raised by scaling_manager
+        error_code_map = {
+            503: "SERVICE_UNAVAILABLE",
+            504: "TIMEOUT",
+            500: "INTERNAL_ERROR"
+        }
+        return error_response(
+            message=e.detail,
+            code=error_code_map.get(e.status_code, "ERROR"),
+            data={"status_code": e.status_code}
+        )
+    
+    except Exception as e:
+        # Unexpected errors
+        logger.error(f"Unexpected error during scaling: {e}")
+        return error_response(
+            message=f"Unexpected error: {str(e)}",
+            code="UNEXPECTED_ERROR"
+        )
+    
+    finally:
+        # Always reset flag when done (success or failure)
+        _scaling_in_progress = False
 
 
 def authorize(token) -> list[str]:

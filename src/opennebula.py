@@ -5,7 +5,7 @@ import os
 import sys
 import requests
 from requests.auth import HTTPBasicAuth
-
+import json
 
 # The user doesn't control the SR VMs. These VMs shared among every user should be under the control
 # of an admin of sorts of the Function Executing group. Could also be oneadmin.
@@ -102,6 +102,132 @@ class OpenNebulaClient(object):
 
     def cluster_vms(self, cluster_id: int) -> list[pyone.bindings.VMSub]:
         return self.one.vmpool.infoextended(-2, -1, -1, 3, f'CID={cluster_id}').VM
+
+    def get_service_info_onegate(self) -> dict:
+        """Get oneflow service information using onegate (no auth needed)
+        
+        Returns:
+            dict: Service information with state, cardinality, roles, etc.
+        """
+        import subprocess
+        
+        self.logger.info("Getting service info from onegate")
+        
+        try:
+            result = subprocess.run(
+                ['onegate', 'service', 'show', '--json', '--extended'],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            service_data = json.loads(result.stdout)
+            service = service_data['SERVICE']
+            return service
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to get service info from onegate: {e.stderr}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not get service information from onegate")
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            self.logger.error(f"Failed to parse onegate output: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not parse service information from onegate")
+
+    def set_service_cardinality_onegate(self, role: str, cardinality: int) -> None:
+        """Set the cardinality of a role using onegate (no auth needed)
+        
+        Args:
+            role (str): The role name (e.g., "FAAS")
+            cardinality (int): Target cardinality for the role
+        """
+        import subprocess
+        
+        self.logger.info(f"Setting role {role} cardinality to {cardinality} via onegate")
+        
+        try:
+            result = subprocess.run(
+                ['onegate', 'service', 'scale', '--role', role, '--cardinality', str(cardinality)],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            self.logger.info(f"Successfully scaled {role} to {cardinality}")
+            self.logger.debug(result.stdout)
+            
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to scale service: {e.stderr}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Could not scale role {role}: {e.stderr}")
+
+    def get_service_info(self, service_id: int) -> dict:
+        """Get oneflow service information including state and cardinality
+        
+        Args:
+            service_id (int): The oneflow service ID
+            
+        Returns:
+            dict: Service information with state, cardinality, roles, etc.
+        """
+        uri = f"{self.oneflow_session['endpoint']}/service/{service_id}"
+        
+        self.logger.info(f"Getting oneflow service {service_id} information")
+        response = requests.get(uri, auth=HTTPBasicAuth(
+            self.oneflow_session['user'], self.oneflow_session['pass']))
+        
+        if response.status_code != 200:
+            error_msg = response.text if response.text else f"HTTP {response.status_code}"
+            self.logger.error(f"Failed to get service info: {error_msg}")
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"Could not read service {service_id}: {error_msg}")
+        
+        service = response.json()["DOCUMENT"]["TEMPLATE"]["BODY"]
+        self.logger.debug(service)
+        
+        return service
+
+    def set_service_cardinality(self, service_id: int, cardinality: int) -> dict:
+        """Set the cardinality of the FAAS role in a oneflow service
+        
+        Args:
+            service_id (int): The oneflow service ID
+            cardinality (int): Target cardinality for the FAAS role
+            
+        Returns:
+            dict: Response from oneflow API
+        """
+        uri = f"{self.oneflow_session['endpoint']}/service/{service_id}/role/FAAS"
+        
+        payload = {
+            "cardinality": cardinality,
+            "force": False
+        }
+        
+        self.logger.info(f"Setting service {service_id} FAAS role cardinality to {cardinality}")
+        self.logger.debug(payload)
+        
+        response = requests.put(
+            uri, 
+            json=payload,
+            auth=HTTPBasicAuth(
+                self.oneflow_session['user'], 
+                self.oneflow_session['pass']))
+        
+        if response.status_code != 200:
+            error_msg = response.text if response.text else f"HTTP {response.status_code}"
+            self.logger.error(f"Failed to set cardinality: {error_msg}")
+            raise HTTPException(
+                status_code=response.status_code, 
+                detail=f"Could not set cardinality for service {service_id}: {error_msg}")
+        
+        result = response.json()
+        self.logger.debug(result)
+        
+        return result
 
 
 def _validate_xmlrpc_call(xmlrpc_call):
