@@ -142,9 +142,6 @@ def scale_service(
         if target_cardinality > current_cardinality:
             logger.info(f"Scaling UP from {current_cardinality} to {target_cardinality}")
             final_service_info = scaling_manager.scale_up(one_client, current_cardinality, target_cardinality, logger)
-        elif target_cardinality == 0:
-            logger.info(f"You cannot scale down to 0 VMs. Scaling down to 1 VM")
-            final_service_info = scaling_manager.scale_down(one_client, 1, logger)
         elif target_cardinality < current_cardinality:
             logger.info(f"Scaling DOWN from {current_cardinality} to {target_cardinality}")
             final_service_info = scaling_manager.scale_down(one_client, target_cardinality, logger)
