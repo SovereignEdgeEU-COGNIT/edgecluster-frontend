@@ -187,12 +187,15 @@ def _stop_wait_and_terminate(vm: dict, logger: logging.Logger) -> bool:
 def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int, target_cardinality: int, logger: logging.Logger) -> dict:
     """Scale down the service to target cardinality.
 
-    Two strategies:
-    - Scale to zero: wait for all RabbitMQ execution queues to drain,
-      then set cardinality to 0 via OneGate.
-    - Partial scale-down: drain and terminate only the VMs being removed
-      (idle first, then busy after stopping their consumer), so remaining
-      VMs keep processing.
+    For scale-to-zero: waits for all RabbitMQ execution queues to drain
+    first (no pending messages), then drains and terminates every VM.
+
+    For partial scale-down: drains and terminates only the VMs being
+    removed, so remaining VMs keep processing.
+
+    In both cases, every VM is individually drained before termination:
+    its consumer is stopped, then we wait for it to finish any in-flight
+    execution before terminating it.
 
     Args:
         one_client: OpenNebula client instance
@@ -203,15 +206,14 @@ def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int
     Returns:
         dict: Final service state information
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     logger.info(f"Starting scale down from {current_cardinality} to {target_cardinality}")
 
     if target_cardinality == 0:
         logger.info("Scale to zero requested, waiting for all execution queues to drain...")
         _wait_for_queue_drain(logger)
-        logger.info("All execution queues drained, proceeding with scale to zero via OneGate")
-        return scale_up(one_client, current_cardinality, 0, logger)
-
-    # --- Partial scale-down: drain and terminate specific VMs ---
+        logger.info("All execution queues drained")
 
     service_info = one_client.get_service_info_onegate()
 
@@ -228,7 +230,7 @@ def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int
         )
 
     vms_to_remove = len(faas_vms) - target_cardinality
-    logger.info(f"Partial scale-down: need to remove {vms_to_remove} VMs")
+    logger.info(f"Need to remove {vms_to_remove} VMs")
 
     busy_vms = []
     idle_vms = []
@@ -239,8 +241,7 @@ def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int
         logger.debug(f"vm_id: {vm_id}, vm_ip: {vm_ip}")
 
         if not vm_ip:
-            logger.warning(f"Could not get IP for VM {vm_id}, terminating without graceful shutdown")
-            _terminate_vm(vm_id, logger)
+            logger.warning(f"Could not get IP for VM {vm_id}, skipping (unreachable)")
             continue
 
         if _is_vm_busy(vm_ip, logger):
@@ -250,13 +251,11 @@ def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int
             idle_vms.append({'id': vm_id, 'ip': vm_ip})
             logger.info(f"VM {vm_id} is IDLE")
 
-    # Phase 1: Terminate idle VMs first (up to vms_to_remove)
+    # Phase 1: Drain and terminate idle VMs first (up to vms_to_remove)
     terminated_idle_count = 0
     if idle_vms and vms_to_remove > 0:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         idle_to_terminate = idle_vms[:vms_to_remove]
-        logger.info(f"Terminating {len(idle_to_terminate)} idle VMs in parallel...")
+        logger.info(f"Draining and terminating {len(idle_to_terminate)} idle VMs in parallel...")
 
         with ThreadPoolExecutor(max_workers=len(idle_to_terminate)) as executor:
             futures = {
@@ -278,8 +277,6 @@ def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int
 
     # Phase 2: If more removals needed, drain busy VMs and wait for them to finish
     if vms_to_remove > 0:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         logger.info(f"Need to remove {vms_to_remove} more VMs from busy ones")
 
         vms_to_unbind = busy_vms[:vms_to_remove]
