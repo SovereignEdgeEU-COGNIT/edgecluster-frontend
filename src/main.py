@@ -144,7 +144,7 @@ def scale_service(
             final_service_info = scaling_manager.scale_up(one_client, current_cardinality, target_cardinality, logger)
         elif target_cardinality < current_cardinality:
             logger.info(f"Scaling DOWN from {current_cardinality} to {target_cardinality}")
-            final_service_info = scaling_manager.scale_down(one_client, target_cardinality, logger)
+            final_service_info = scaling_manager.scale_down(one_client, current_cardinality, target_cardinality, logger)
         else:
             logger.info(f"Already at target cardinality {target_cardinality}, no scaling needed")
             final_service_info = service_info
