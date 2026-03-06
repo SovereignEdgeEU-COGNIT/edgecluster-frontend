@@ -155,12 +155,44 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
         time.sleep(poll_interval)
 
 
-def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int, target_cardinality: int, logger: logging.Logger) -> dict:
-    """Scale down the service to target cardinality via OneGate after queue drain.
+def _stop_wait_and_terminate(vm: dict, logger: logging.Logger) -> bool:
+    """Unified function to stop consumer, wait for idle, and terminate VM
+    
+    Args:
+        vm: VM dictionary with 'id' and 'ip' keys
+        logger: Logger instance
+        
+    Returns:
+        bool: True if successfully terminated, False otherwise
+    """
+    try:
+        # Step 1: Stop consumer
+        _stop_vm_consumer(vm['ip'], logger)
+        logger.info(f"VM {vm['id']} consumer stopped, waiting for idle state...")
+        
+        # Step 2: Poll until VM becomes idle
+        while True:            
+            # Check if VM is idle
+            if not _is_vm_busy(vm['ip'], logger):
+                # Step 3: Terminate when confirmed idle
+                logger.info(f"VM {vm['id']} is idle, terminating now")
+                _terminate_vm(vm['id'], logger)
+                return True
+            
+    except Exception as e:
+        logger.error(f"Error terminating VM {vm['id']}: {e}")
+        return False
 
-    Waits until all flavour execution queues in RabbitMQ are empty (no pending
-    function executions), then delegates to scale_up which handles the OneGate
-    cardinality change and polling.
+
+def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int, target_cardinality: int, logger: logging.Logger) -> dict:
+    """Scale down the service to target cardinality.
+
+    Two strategies:
+    - Scale to zero: wait for all RabbitMQ execution queues to drain,
+      then set cardinality to 0 via OneGate.
+    - Partial scale-down: drain and terminate only the VMs being removed
+      (idle first, then busy after stopping their consumer), so remaining
+      VMs keep processing.
 
     Args:
         one_client: OpenNebula client instance
@@ -172,8 +204,238 @@ def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int
         dict: Final service state information
     """
     logger.info(f"Starting scale down from {current_cardinality} to {target_cardinality}")
-    logger.info("Waiting for RabbitMQ queues to drain before scaling down...")
-    _wait_for_queue_drain(logger)
-    logger.info("All execution queues drained, proceeding with scale down via OneGate")
-    return scale_up(one_client, current_cardinality, target_cardinality, logger)
+
+    if target_cardinality == 0:
+        logger.info("Scale to zero requested, waiting for all execution queues to drain...")
+        _wait_for_queue_drain(logger)
+        logger.info("All execution queues drained, proceeding with scale to zero via OneGate")
+        return scale_up(one_client, current_cardinality, 0, logger)
+
+    # --- Partial scale-down: drain and terminate specific VMs ---
+
+    service_info = one_client.get_service_info_onegate()
+
+    faas_vms = []
+    for role in service_info.get('roles', []):
+        if role.get('name') == 'FaaS':
+            faas_vms = role.get('nodes', [])
+            break
+
+    if not faas_vms:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="No FaaS VMs found in service"
+        )
+
+    vms_to_remove = len(faas_vms) - target_cardinality
+    logger.info(f"Partial scale-down: need to remove {vms_to_remove} VMs")
+
+    busy_vms = []
+    idle_vms = []
+
+    for vm_node in faas_vms:
+        vm_id = vm_node.get('deploy_id')
+        vm_ip = _get_vm_ip(vm_node, logger)
+        logger.debug(f"vm_id: {vm_id}, vm_ip: {vm_ip}")
+
+        if not vm_ip:
+            logger.warning(f"Could not get IP for VM {vm_id}, terminating without graceful shutdown")
+            _terminate_vm(vm_id, logger)
+            continue
+
+        if _is_vm_busy(vm_ip, logger):
+            busy_vms.append({'id': vm_id, 'ip': vm_ip})
+            logger.info(f"VM {vm_id} is BUSY")
+        else:
+            idle_vms.append({'id': vm_id, 'ip': vm_ip})
+            logger.info(f"VM {vm_id} is IDLE")
+
+    # Phase 1: Terminate idle VMs first (up to vms_to_remove)
+    terminated_idle_count = 0
+    if idle_vms and vms_to_remove > 0:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        idle_to_terminate = idle_vms[:vms_to_remove]
+        logger.info(f"Terminating {len(idle_to_terminate)} idle VMs in parallel...")
+
+        with ThreadPoolExecutor(max_workers=len(idle_to_terminate)) as executor:
+            futures = {
+                executor.submit(_stop_wait_and_terminate, vm, logger): vm
+                for vm in idle_to_terminate
+            }
+            for future in as_completed(futures):
+                vm = futures[future]
+                try:
+                    if future.result():
+                        terminated_idle_count += 1
+                except Exception as e:
+                    logger.error(f"Unexpected error for VM {vm['id']}: {e}")
+
+        logger.info(f"Successfully terminated {terminated_idle_count} idle VMs")
+
+    vms_to_remove -= terminated_idle_count
+    terminated_count = terminated_idle_count
+
+    # Phase 2: If more removals needed, drain busy VMs and wait for them to finish
+    if vms_to_remove > 0:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        logger.info(f"Need to remove {vms_to_remove} more VMs from busy ones")
+
+        vms_to_unbind = busy_vms[:vms_to_remove]
+        logger.info(f"Stopping consumers and waiting for {len(vms_to_unbind)} busy VMs to finish in parallel...")
+
+        with ThreadPoolExecutor(max_workers=len(vms_to_unbind)) as executor:
+            futures = {
+                executor.submit(_stop_wait_and_terminate, vm, logger): vm
+                for vm in vms_to_unbind
+            }
+            for future in as_completed(futures):
+                vm = futures[future]
+                try:
+                    if future.result():
+                        terminated_count += 1
+                except Exception as e:
+                    logger.error(f"Unexpected error for busy VM {vm['id']}: {e}")
+
+    logger.info(f"Scale down complete! Terminated {terminated_count} VMs, target cardinality: {target_cardinality}")
+    service_info = one_client.get_service_info_onegate()
+
+    return service_info
+
+
+def _get_vm_ip(vm_node: dict, logger: logging.Logger) -> str:
+    """Extract VM IP address from node info
+    
+    Args:
+        vm_node: VM node dictionary from oneflow
+        logger: Logger instance
+        
+    Returns:
+        str: VM IP address or None if not found
+    """
+    try:
+        vm_info = vm_node.get('vm_info', {})
+        template = vm_info.get('VM', {}).get('TEMPLATE', {})
+        nic = template.get('NIC', {})
+        
+        # Try IPv4 first
+        if isinstance(nic, list):
+            ip = nic[0].get('IP')
+        else:
+            ip = nic.get('IP')
+        
+        if ip:
+            return ip
+        
+        # Try IPv6
+        if isinstance(nic, list):
+            ip6 = nic[0].get('IP6')
+        else:
+            ip6 = nic.get('IP6')
+        return ip6
+        
+    except Exception as e:
+        logger.error(f"Error extracting VM IP: {e}")
+        return None
+
+
+def _is_vm_busy(vm_ip: str, logger: logging.Logger) -> bool:
+    """Check if VM is currently executing a function via Prometheus metrics
+    
+    Args:
+        vm_ip: VM IP address
+        logger: Logger instance
+        
+    Returns:
+        bool: True if VM is busy (executing), False if idle
+    """
+    import requests
+    
+    try:
+        response = requests.get(f"http://{vm_ip}:9100/metrics", timeout=5)
+        metrics_text = response.text
+        
+        # Look for vm_is_executing metric
+        for line in metrics_text.split('\n'):
+            if line.startswith('vm_is_executing'):
+                # Parse: vm_is_executing{vm="810"} 1
+                # or:    vm_is_executing 1
+                parts = line.split()
+                if len(parts) >= 2:
+                    value = float(parts[-1])
+                    logger.debug(f"prometheus: vm_is_executing for {vm_ip}: {value}")
+                    return value > 0
+        
+        # Metric not found, assume idle
+        logger.warning(f"vm_is_executing metric not found for {vm_ip}, assuming idle")
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error checking VM {vm_ip} status: {e}")
+        # On error, assume idle to avoid blocking scale-down
+        return False
+
+
+def _stop_vm_consumer(vm_ip: str, logger: logging.Logger) -> None:
+    """Stop RabbitMQ consumer on a VM (non-blocking, just triggers the stop)
+    
+    Args:
+        vm_ip: VM IP address
+        logger: Logger instance
+    """
+    import requests
+    
+    try:
+        # To trigger the stop
+        response = requests.post(
+            f"http://{vm_ip}:8000/control/stop-consuming",
+            timeout=3 
+        )
+        
+        if response.status_code == 200:
+            logger.info(f"Successfully sent stop-consuming request to VM {vm_ip}")
+        else:
+            logger.warning(f"Stop-consuming returned {response.status_code} for VM {vm_ip}")
+            
+    except requests.exceptions.Timeout:
+        # Timeout is OK - the endpoint received our request but is waiting for function to finish
+        logger.info(f"Stop-consuming request sent to VM {vm_ip} (endpoint still processing)")
+    except Exception as e:
+        logger.warning(f"Error stopping consumer on VM {vm_ip}: {e} (will poll vm_is_executing)")
+
+
+def _terminate_vm(vm_id: int, logger: logging.Logger) -> None:
+    """Terminate a VM using onegate
+    
+    Args:
+        vm_id: VM ID to terminate
+        logger: Logger instance
+    """
+    import subprocess
+    
+    try:
+        logger.info(f"Terminating VM {vm_id} with hard shutdown")
+        
+        result = subprocess.run(
+            ['onegate', 'vm', 'terminate', str(vm_id), '--hard'],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30  # 30 second timeout for terminate command
+        )
+        
+        logger.info(f"Successfully terminated VM {vm_id}")
+        logger.debug(result.stdout)
+        
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"Timeout terminating VM {vm_id}: command took longer than 30s")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=f"Timeout terminating VM {vm_id}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to terminate VM {vm_id}: {e.stderr}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not terminate VM {vm_id}: {e.stderr}")
 
