@@ -1,9 +1,69 @@
 #!/usr/bin/env python
 
 import time
+import subprocess
+import json
 import logging
 from fastapi import HTTPException, status
 import opennebula
+
+
+def _get_queue_pending_messages(logger: logging.Logger) -> int:
+    """Get total pending function execution messages across all flavour queues.
+
+    Queries RabbitMQ via rabbitmqadmin, excludes non-execution queues
+    (scaler_metrics_queue, results_* temporary queues).
+
+    Returns:
+        int: Total pending messages in flavour execution queues
+    """
+    try:
+        result = subprocess.run(
+            ['rabbitmqadmin', 'list', 'queues', 'name', 'messages', '--format=raw_json'],
+            capture_output=True, text=True, check=True, timeout=10
+        )
+        queues = json.loads(result.stdout)
+        total = 0
+        for q in queues:
+            name = q.get('name', '')
+            if name == 'scaler_metrics_queue' or name.startswith('results_'):
+                continue
+            pending = q.get('messages', 0)
+            if pending > 0:
+                logger.info(f"Queue '{name}' has {pending} pending function executions")
+            total += pending
+        return total
+    except Exception as e:
+        logger.error(f"Error querying RabbitMQ queues: {e}")
+        return 0
+
+
+def _wait_for_queue_drain(logger: logging.Logger, timeout: int = 300, poll_interval: int = 5) -> None:
+    """Block until all flavour execution queues are drained.
+
+    Args:
+        logger: Logger instance
+        timeout: Maximum seconds to wait for drain before raising an error
+        poll_interval: Seconds between queue checks
+    """
+    start_time = time.time()
+
+    while True:
+        pending = _get_queue_pending_messages(logger)
+        if pending == 0:
+            logger.info("All execution queues are empty")
+            return
+
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail=f"Queue drain timed out after {timeout}s. {pending} messages still pending."
+            )
+
+        logger.info(f"{pending} messages still pending, waiting {poll_interval}s for drain... ({int(elapsed)}s/{timeout}s)")
+        time.sleep(poll_interval)
+
 
 def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, target_cardinality: int, logger: logging.Logger) -> dict:
     """Scale up the service to target cardinality with polling until complete
@@ -18,7 +78,7 @@ def scale_up(one_client: opennebula.OpenNebulaClient, current_cardinality: int, 
     """
     poll_interval = 2  # seconds
     # The timeout depends on the target cardinality, because we need to wait for all VMs to be ready
-    timeout = 70 * (target_cardinality - current_cardinality)
+    timeout = 70 * abs(target_cardinality - current_cardinality)
     
     logger.info(f"Starting scale up to cardinality {target_cardinality}")
     
@@ -124,80 +184,82 @@ def _stop_wait_and_terminate(vm: dict, logger: logging.Logger) -> bool:
         return False
 
 
-def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int, logger: logging.Logger) -> dict:
-    """Scale down the service to target cardinality with idle-first strategy
-    
+def scale_down(one_client: opennebula.OpenNebulaClient, current_cardinality: int, target_cardinality: int, logger: logging.Logger) -> dict:
+    """Scale down the service to target cardinality.
+
+    For scale-to-zero: waits for all RabbitMQ execution queues to drain
+    first (no pending messages), then drains and terminates every VM.
+
+    For partial scale-down: drains and terminates only the VMs being
+    removed, so remaining VMs keep processing.
+
+    In both cases, every VM is individually drained before termination:
+    its consumer is stopped, then we wait for it to finish any in-flight
+    execution before terminating it.
+
     Args:
         one_client: OpenNebula client instance
+        current_cardinality: Current number of VMs for FAAS role
         target_cardinality: Desired number of VMs for FAAS role
         logger: Logger instance
-        
+
     Returns:
         dict: Final service state information
     """
-    import requests
-    
-    poll_interval = 5  # seconds
-    
-    logger.info(f"Starting scale down to cardinality {target_cardinality}")
-    
-    # Get current service state
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    logger.info(f"Starting scale down from {current_cardinality} to {target_cardinality}")
+
+    if target_cardinality == 0:
+        logger.info("Scale to zero requested, waiting for all execution queues to drain...")
+        _wait_for_queue_drain(logger)
+        logger.info("All execution queues drained")
+
     service_info = one_client.get_service_info_onegate()
-    
-    # Extract FaaS VMs
+
     faas_vms = []
     for role in service_info.get('roles', []):
         if role.get('name') == 'FaaS':
             faas_vms = role.get('nodes', [])
             break
-    
+
     if not faas_vms:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="No FaaS VMs found in service"
         )
-    
-    current_cardinality = len(faas_vms)
-    vms_to_remove = current_cardinality - target_cardinality
-    
+
+    vms_to_remove = len(faas_vms) - target_cardinality
     logger.info(f"Need to remove {vms_to_remove} VMs")
-    
-    # Phase 1: Classify VMs into busy and idle
+
     busy_vms = []
     idle_vms = []
-    
+
     for vm_node in faas_vms:
         vm_id = vm_node.get('deploy_id')
         vm_ip = _get_vm_ip(vm_node, logger)
         logger.debug(f"vm_id: {vm_id}, vm_ip: {vm_ip}")
 
         if not vm_ip:
-            logger.warning(f"Could not get IP for VM {vm_id}, terminating without graceful shutdown")
-            _terminate_vm(vm_id, logger)
+            logger.warning(f"Could not get IP for VM {vm_id}, skipping (unreachable)")
             continue
-        
-        is_busy = _is_vm_busy(vm_ip, logger)
-        
-        if is_busy:
+
+        if _is_vm_busy(vm_ip, logger):
             busy_vms.append({'id': vm_id, 'ip': vm_ip})
             logger.info(f"VM {vm_id} is BUSY")
         else:
             idle_vms.append({'id': vm_id, 'ip': vm_ip})
             logger.info(f"VM {vm_id} is IDLE")
-    
-    # Phase 1.5: Async terminate idle VMs (up to vms_to_remove)
+
+    # Phase 1: Drain and terminate idle VMs first (up to vms_to_remove)
     terminated_idle_count = 0
     if idle_vms and vms_to_remove > 0:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        # Select idle VMs to terminate (up to the number we need to remove)
         idle_to_terminate = idle_vms[:vms_to_remove]
-        logger.info(f"Terminating {len(idle_to_terminate)} idle VMs in parallel...")
-        
-        # Async stop+terminate each VM as soon as its stop-consuming finishes
+        logger.info(f"Draining and terminating {len(idle_to_terminate)} idle VMs in parallel...")
+
         with ThreadPoolExecutor(max_workers=len(idle_to_terminate)) as executor:
             futures = {
-                executor.submit(_stop_wait_and_terminate, vm, logger): vm 
+                executor.submit(_stop_wait_and_terminate, vm, logger): vm
                 for vm in idle_to_terminate
             }
             for future in as_completed(futures):
@@ -207,25 +269,22 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
                         terminated_idle_count += 1
                 except Exception as e:
                     logger.error(f"Unexpected error for VM {vm['id']}: {e}")
-        
-        logger.info(f"Successfully terminated {terminated_idle_count} idle VMs")
-    
-    vms_to_remove -= terminated_idle_count
-    terminated_count = terminated_idle_count  # Track total terminated VMs
 
-    # Phase 2: If more removals needed, unbind busy VMs and wait for them to finish
+        logger.info(f"Successfully terminated {terminated_idle_count} idle VMs")
+
+    vms_to_remove -= terminated_idle_count
+    terminated_count = terminated_idle_count
+
+    # Phase 2: If more removals needed, drain busy VMs and wait for them to finish
     if vms_to_remove > 0:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
         logger.info(f"Need to remove {vms_to_remove} more VMs from busy ones")
-        
+
         vms_to_unbind = busy_vms[:vms_to_remove]
         logger.info(f"Stopping consumers and waiting for {len(vms_to_unbind)} busy VMs to finish in parallel...")
-        
-        # Process each busy VM independently in parallel
+
         with ThreadPoolExecutor(max_workers=len(vms_to_unbind)) as executor:
             futures = {
-                executor.submit(_stop_wait_and_terminate, vm, logger): vm 
+                executor.submit(_stop_wait_and_terminate, vm, logger): vm
                 for vm in vms_to_unbind
             }
             for future in as_completed(futures):
@@ -235,11 +294,10 @@ def scale_down(one_client: opennebula.OpenNebulaClient, target_cardinality: int,
                         terminated_count += 1
                 except Exception as e:
                     logger.error(f"Unexpected error for busy VM {vm['id']}: {e}")
-    
-    # Verify final state
+
     logger.info(f"Scale down complete! Terminated {terminated_count} VMs, target cardinality: {target_cardinality}")
     service_info = one_client.get_service_info_onegate()
-    
+
     return service_info
 
 
